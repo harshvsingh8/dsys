@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>6.5840 Go</title>
+<link rel="stylesheet" href="../style.css" type="text/css">
+</head>
+<body>
+
+<h3>Go</h3>
+<p>
+You'll implement all the labs in
+<a href="http://www.golang.org/">Go</a>. The Go web site contains lots
+of tutorial information. You should use Go 1.15 or any later version.
+<!-- It's okay to grade labs with a _later_ Go version, thanks to the Go 1
+    compatibility promise: https://go.dev/doc/go1compat -->
+You can check your Go version by running <tt>go version</tt>.
+
+<p>
+We recommend that you work on the labs on your own machine, so you can
+use the tools, text editors, etc. that you are already familiar with. Many
+editors have plug-ins for Go, e.g.
+<a href="https://atom.io/packages/go-plus">go-plus</a> for Atom and the
+officially-supported
+<a href="https://code.visualstudio.com/docs/languages/go">Go extension</a> for
+VS Code. Some commercial IDEs like
+<a href="https://www.jetbrains.com/go/">GoLand</a> have
+<a href="https://www.jetbrains.com/community/education/#students">free educational licenses</a>.
+We are happy to provide support over Piazza and in office hours for helping you
+set up tooling.
+
+As a fallback, you can work on the labs on Athena, but we do not recommend this
+option.
+
+<h4>macOS</h4>
+
+<p>
+You can use <a href="https://brew.sh/">Homebrew</a> to install Go. After
+installing Homebrew, run <tt>brew install go</tt>.
+
+<h4>Linux</h4>
+
+<p>
+Depending on your Linux distribution, you might be able to get an up-to-date
+version of Go from the package repository, e.g. by running <tt>apt install
+golang</tt>. Otherwise, you can manually install a binary from Go's website.
+First, make sure that you're running a 64-bit kernel (<tt>uname -a</tt> should
+mention "x86_64 GNU/Linux"), and then run:
+
+<pre>
+$ wget -qO- https://go.dev/dl/go1.17.6.linux-amd64.tar.gz | sudo tar xz -C /usr/local
+</pre>
+
+You'll need to make sure <tt>/usr/local/go/bin</tt> is on your <tt>PATH</tt>.
+You can do this by adding <tt>export PATH=$PATH:/usr/local/go/bin</tt> to your
+shell's init file ( commonly this is one of <tt>.bashrc</tt>,  <tt>.bash_profile</tt> or <tt>.zshrc</tt>)
+
+<h4>Windows</h4>
+
+<p>
+It seems to be painful or impossible to get the labs to work correctly
+on Windows or on Windows Subsystem for Linux (WSL). Use Athena, a Mac,
+or Linux.
+
+<h4>Athena</h4>
+
+<p>
+You can log into a public Athena host with <tt>ssh {your
+kerberos}@athena.dialup.mit.edu</tt>. Once you're logged in, to get Go 1.15,
+run:
+
+<pre>
+$ setup ggo
+</pre>
+
+<p>
+If you get the following error:
+
+<pre>
+bash: setup: command not found
+</pre>
+
+you might have removed something important from your shell's startup
+scripts. Compare your <tt>~/.bashrc</tt> to
+<tt>/usr/prototype_user/.bashrc</tt> and add anything that you're missing.
+
+<p>
+If you use a shell other than bash on Athena, the 'setup' command might
+not work properly, and you might need to add <tt>/mit/ggo/current/bin/</tt> to
+your path manually.
+
+</body>
+</html>

@@ -1,0 +1,342 @@
+6.5840 2023 Lecture 9: Consistency, Linearizability
+
+today's topic: consistency models, specifically linearizability
+
+what's a consistency model?
+  a specification for the relationship of different clients' views of a service
+  I'll focus on key/value storage with network clients
+    put(k, v)
+    get(k) -> v
+  given some put/get calls, what outcome(s) are valid?
+
+why might there be any room for debate about behavior?
+  [simple diagrams]
+  concurrent reads/writes
+  replicas
+  caches
+  failure, recovery
+  retransmission, especially across failure
+
+why does a storage system need a consistency model?
+  it's hard to write correct applications w/o knowing how storage behaves
+    e.g. producer computes, then executes
+      put("result", 27)
+      put("done", true)
+    consumer executes
+      while get("done") != true
+        pause
+      v = get(result)
+    is v guaranteed to be 27? or even have a value at all?
+  it's hard to design/implement/optimize service w/o a notion of correctness
+    e.g. is it OK for clients to read from GFS replicas (rather than primary)?
+
+there are lots of consistency models
+  sometimes driven by desire to simplify application programmers' lives
+  and sometimes codifying behavior that was convenient for implementors
+  also, lots of overlapping definitions from different fields
+    e.g. FS, databases, CPU memory
+  today: linearizability
+  but also:
+    eventual consistency
+    causal consistency
+    fork consistency
+    serializability
+    sequential consistency
+  driving force: performance / convenience / robustness tradeoffs
+
+linearizability
+  it's usually what people mean by "strong consistency".
+    matches programmer intuitions reasonably well.
+    but it effectively rules out many tempting optimizations.
+  you'll implement a linearizable key/value store in Lab 3.
+
+starting point
+  we assume that there's a serial spec for what individual operations do
+  serial = a single server executing operations one at a time
+  string db[]
+  put(k, v):
+    db[k] = v
+    return true
+  get(k):
+    return db[k]
+  no surprises here.
+
+but what about concurrent client operations?
+  a client sends a request;
+    takes some time crossing the network;
+    server computes, talks to replicas, &c;
+    reply moves through network;
+    client receives reply
+  other clients may send/receive/be waiting during that time!
+  we need a way to describe concurrent scenarios,
+    so we can talk about which are/aren't valid
+
+definition: a history
+  describes a time-line of possibly-concurrent operations
+  each operation has invocation and response times (RPC)
+    as well as argument and return values
+  example:
+    C1: |-Wx1-| |-Wx2-|
+    C2:   |---Rx2---|
+  the x-axis is real time
+  "Wx1" means "write value 1 to record x" -- put(x, 1)
+  "Rx1" means "a read of record x yielded value 1" -- get(x) -> 1
+  C1 sent put(x, 1), got reply, sent put(x, 2), got reply
+  C2 get(x), got reply=2
+  the "|-" indicates the time at which client sent request
+  the "-|" indicates the time at which the client received the reply
+  note that writes have responses; no return value other than "done"
+
+definition: a history is linearizable if
+  * you can find a point in time for each operation
+    between its invocation and response, and
+  * the history's results are the same as serial
+    execution in that point order.
+
+example history 1:
+  |-Wx1-| |-Wx2-|
+    |---Rx2---|
+      |-Rx1-|
+
+is this history linearizable?
+  can we find a linearization point for each operation?
+  we may need to try a few different point assignments.
+  this order of points satisfies the rules:
+    Wx1 Rx1 Wx2 Rx2
+  1. each point lies between invocation and response.
+  2. the sequence satisfies the serial put/get spec.
+
+note: either read could have returned either 1 or 2.
+  so linearizability often allows multiple different outcomes.
+
+what can we do with the linearizability definition?
+  use it to decide if a given history is legal (linearizable).
+  only relevant if we have a linearizable service:
+    one that aims to always generates linearizable histories.
+  for programming: what can I assume / expect as a client?
+  for testing: generate requests, check observed history.
+  for thinking: could this optimization result in non-linearizable results?
+
+note: the definition is based on external behavior
+  so we can apply it without having to know how service works
+
+why is it called "linearizability"?
+  the linearization points turn concurrent operations
+    into a serial execution -- "linear".
+  thus "linearizable" in the sense that it can be converted to a
+    linear series of operations.
+
+example 2:
+  |-Wx1-| |----Wx2----|
+    |--Rx2--|
+              |-Rx1-|
+we can try a few assignments of linearization points.
+  how about Wx1 Wx2 Rx2 Rx1?
+  it is not valid because "Wx2 Rx1" doesn't conform to serial spec.
+how to show something *isn't* linearizable?
+  show that no assignment of points works.
+  or that none of the serial orders that conform to the time rule
+    conform to the serial execution rule.
+  there are only 24 orders in this example, we could try them all.
+sometimes you can find a cycle in a "must come before" graph:
+  Wx1 before Wx2 (time)
+  Wx2 before Rx2 (value)
+  Rx2 before Rx1 (time)
+  Rx1 before Wx2 (value)
+there's a cycle -- so it cannot be turned into a linear order. so this
+  history is not linearizable. 
+and, if a system could produce this history, we would know that the
+  system wasn't linearizable.
+one way to look at this is that the Rx2 shows that the
+  value has already been updated, so strictly subsequent client
+  requests must not see any earlier write.
+so, if we want linearizability:
+  can't reveal multiple divergent copies to clients.
+  can't un-do a revealed write, e.g. if a replica crashes.
+
+GFS is not linearizable: it can produce the example 2 history since
+  the Rx1 could come from a replica that hasn't yet been updated.
+  if we wanted GFS to be linearizable, client reads would have
+    to go through the primary too, and wait for outstanding
+    writes to complete.
+  similarly, for Lab 3, clients can only read from the leader,
+    not followers.
+
+example 3:
+|--Wx0--|  |--Wx1--|
+            |--Wx2--|
+        |-Rx2-| |-Rx1-|
+this may look non-linearizable because Wx2 looks
+  like it comes after Wx1, but Rx2 comes before Rx1.
+but this order shows it's linearizable: Wx0 Wx2 Rx2 Wx1 Rx1
+so:
+  the service can pick either order for concurrent writes.
+  e.g. a key/value server handing concurrent ops to Raft.Start()
+  the linear order can be different from start-time order!
+
+example 4:
+|--Wx0--|  |--Wx1--|
+            |--Wx2--|
+C1:     |-Rx2-| |-Rx1-|
+C2:     |-Rx1-| |-Rx2-|
+can there be a total order?
+  C1 needs Wx2 Rx2 Wx1 Rx1
+  C2 needs Wx1 Rx1 Wx2 Rx2
+  we can't have both Wx2 before Wx1, and Wx2 after Wx1.
+  so not linearizable.
+so:
+  service can choose either order for concurrent writes
+  but all clients must see the writes in the same order
+  this is important when there are replicas or caches
+    they have to all agree on the order in which operations occur
+
+example 5:
+|-Wx1-|
+        |-Wx2-|
+                |-Rx1-|
+can order include Wx2 Rx1?
+  no: the read doesn't see the latest written value
+can order include Rx1 Wx2?
+  no: the order has to preserve order if one op ends before another starts
+no order is possible -- not linearizable
+so:
+  reads must return fresh data: stale values aren't linearizable
+  even if the reader doesn't know about the write
+    the time rule requires reads to yield the latest data
+  linearizability forbids many situations:
+    split brain (two active leaders)
+    forgetting committed writes after a reboot
+    reading from lagging replicas
+
+example 6:
+C1 calls put(x, 1)
+C2 calls put(x, 2)
+service receives C1's request;
+  network drops response;
+  C1's RPC library re-sends request
+is it legal for service to execute *both* of C1's request messages?
+we then might see this if C3 reads three times:
+C1: |--------Wx1---------| (due to retransmission)
+C2:        |-Wx2-|
+C3:   |-Rx1-| |-Rx2-|  |-Rx1-|
+assume x starts out as zero
+this history is not linearizable!
+so, if we want linearizability:
+  duplicate requests from retransmissions must be suppressed!
+  the Raft paper mentions this issue (and a solution) in Section 8
+
+example 7:
+suppose the service remembers each request+response,
+  detect duplicate requests,
+  reply with same value as for first copy of the request
+  you'll do this in Lab 3.
+for writes, this eliminates the duplicate execution -- good.
+but for reads, this may yield a saved value that is now out of date!
+what does linearizabilty say?
+C1: |-Wx3-|          |-Wx4-|
+C2:          |-Rx3-------------|
+C2's first request before Wx4, re-sends after Wx4
+a valid order: Wx3 Rx3 Wx4
+so: returning the old saved value 3 is correct
+    returning 4 would also be correct
+
+we say a storage system is linearizable if it only ever produces
+  linearizable execution histories.
+but the definition doesn't tell us how to build such a system.
+
+linearizable systems are not limited to just read and write
+  they can support any operation on individual items
+  e.g. "mini-transactions"
+    atomic read-write sequence on individual items
+    test-and-set
+    increment
+    &c
+  works b/c linearizable systems act as if executing ops serially.
+  very useful!
+
+clients like linearizability -- it's relatively easy to use:
+  * reads see fresh data -- not stale
+  * all clients see the same data (when there aren't writes)
+  * all clients see data changes in the same order
+    so my put(v,27); put(done,true); example works
+  * mini-transactions are possible
+  the value of these properties will be clearer when we look at
+    systems with weaker consistencies.
+
+how can we implement linearizability?
+  all solutions have a significant serial component!
+
+single serial server that doesn't crash.
+  [diagram: clients, server, op queue, state]
+  server picks an order for concurrently arriving client requests.
+  executes them in that order, one at a time,
+    replies to each before starting the next.
+  but what if we want fault tolerance?
+
+primary/backup replication
+  [diagram: primary, two backups]
+  all requests go to the primary
+    picks a serial order
+    forwards to backups
+    backups execute in the same order
+    primary replies to client only after both backups have executed
+    so, if client saw response, backup guaranteed to have executed
+      important if primary fails
+      to avoid forgetting completed requests
+  clients cannot send reads directly to a backup, as in GFS
+  need an external party to decide when backup should take over
+    to avoid split brain
+    as in the VMware FT paper
+
+Raft
+  peers agree on a serial order for client operations -- the log
+  all peers execute all operations in the same order
+
+what about the performance of linearizable systems?
+  bad news: if replication, then lots of communication
+  bad news: if replication, all replicas must be reachable
+  good news: you can shard
+
+what about other consistency models?
+  can they allow better performance?
+  intuitive semantics?
+
+example: eventual consistency -- a weak model
+  multiple copies of the data (e.g. in different datacenters)
+  a read consults any one replica (e.g. closest)
+  a write updates any one replica (e.g. closest)
+    client gets response when that one update is done
+  replicas synchronize updates in the background
+    eventually, other replicas will see my update
+
+eventual consistency is pretty popular
+  faster than linearizability
+    especially if replicas are in different cities for fault-tolerance
+  and more available -- any one replica will do
+    no primary/backup communication or Raft quorum required
+  Amazon's Dynamo, and Cassandra, provide eventual consistency
+
+but eventual consistency exposes some anomalies to application programmer:
+  * a read may not see the most recent write -- reads can see stale data
+    a problem for password change, ACL change, my result/done example
+  * writes may be applied out of order
+  * different clients may see different data, different orders
+  * concurrent writes to same item need to be resolved somehow!
+    C1: put(x, 1)
+    C2: put(x, 2)
+    may initially be applied at different replicas
+    only later will they be pushed to other replicas
+    how to ensure all replicas choose the same final value?
+      so that, eventually, they are identical?
+  * eventual consistency cannot support e.g. test-and-set
+
+A general pattern: you can usually choose only one of these:
+  Strong consistency
+  Maximum availability
+
+But not both.
+  Strong consistency makes you wait to update replicas,
+    and can't proceed if too many replicas are unavailable.
+    Thus poor availability.
+  Eventual consistency can proceed even if no other replicas are reachable.
+    But has poor consistency.

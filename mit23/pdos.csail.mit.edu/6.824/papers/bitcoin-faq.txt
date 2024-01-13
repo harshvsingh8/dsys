@@ -1,0 +1,408 @@
+6.824 Bitcoin FAQ
+
+Q: I don't understand why the blockchain is so important. Isn't the
+requirement for the owner's signature on each transaction enough to
+prevent bitcoins from being stolen?
+
+A: The signature is not enough, because it doesn't prevent the owner
+from spending money twice: signing two transactions that transfer the
+same bitcoin to different recipients. The blockchain acts as a
+publishing system to try to ensure that once a bitcoin has been spent
+once, lots of participants will know, and will be able to reject a
+second spend.
+
+Q: Why does Bitcoin need to define a new currency? Wouldn't it be more
+convenient to use an existing currency like dollars?
+
+A: The new currency (Bitcoins) allows the system to motivate miners
+with freshly created money; this would be harder with dollars because
+it's illegal for ordinary people to create fresh dollars. One would
+also need a way to connect balances and transactions on a
+dollar-denominated blockchain with dollars in the external world. But
+have a look at "stablecoins" such as Tether.
+
+Q: Why is the purpose of proof-of-work?
+
+A: It makes it hard for an attacker to convince the system to switch
+to a blockchain fork in which a coin is spent in a different way than
+in the main fork. You can view proof-of-work as making a random choice
+over the participating CPUs of who gets to choose which fork to
+extend. If the attacker controls only a few CPUs, the attacker won't
+be able to extend a new malicious fork fast enough to overtake the
+main blockchain.
+
+Q: Could a Bitcoin-like system use something less wasteful than
+proof-of-work?
+
+A: Proof-of-work is hard to fake or simulate, a nice property in a
+totally open system like Bitcoin where you cannot trust anyone to
+follow rules. The main alternative is proof-of-stake, as used in
+Ethereum, Algorand, and Byzcoin. Have a look at
+https://ethereum.org/en/developers/docs/consensus-mechanisms/pos/ In a
+smallish closed system, in which the participants are known and mostly
+trusted, Byzantine agreement protocols could be used, as in
+Hyperledger, or variants of it as in Stellar.
+
+Q: Can Alice spend the same coin twice by sending "pay Bob" and "pay
+Charlie" to different subsets of miners?
+
+A: Suppose Alice does that. One of the two subsets of miners is likely
+to find the nonce for a new block first. Let's assume the first block
+to be found is B50 and it contains "pay Bob". This block will be
+flooded to all miners, so the miners working on "pay Charlie" will
+switch to mining a successor block to B50. These miners validate
+transactions they place in blocks, so they will notice that the "pay
+Charlie" coin was spent in B50, and they will ignore the "pay Charlie"
+transaction. Thus, in this scenario, double-spend won't work.
+
+There's a small chance that two miners find blocks at the same time,
+perhaps B50' containing "pay Bob" and B50'' containing "pay Charlie".
+At this point there's a fork in the block chain. These two blocks will
+be flooded to all the nodes. Each node will start mining a successor
+to one of them (the first it hears). Again the most likely outcome is
+that a single miner will finish significantly before any other miner,
+and flood the successor, and most peers will switch to that winning
+fork. The chance of repeatedly having two miners simultaneously find
+blocks gets very small as the forks get longer. So eventually all the
+peers will switch to the same fork, and in that fork there will be
+only one spend of the coin.
+
+The possibility of accidentally having a short-lived fork is the
+reason that careful clients wait until there are a few successor
+blocks before believing a transaction.
+
+Q: It takes an average of 10 minutes for a Bitcoin block to be
+validated. Does this mean that the parties involved aren't sure if the
+transaction really happened until 10 minutes later?
+
+A: Yes. The 10 minutes is awkward. But it's not always a problem. For
+example, suppose you buy a toaster oven with Bitcoin from a web site.
+The web site can check that the transaction is known by a few servers,
+though not yet in a block, and show you a "purchase completed" page.
+Before shipping it to you, they should check that the transaction is
+in a block. For low-value in-person transactions, such as buying a cup
+of coffee, it's probably enough for the seller to ask a few peers to
+check that the bitcoins haven't already been spent (i.e. it's
+reasonably safe to not bother waiting for the transaction to appear in
+the blockchain at all). For a large in-person purchase (e.g., a car),
+it is important to wait for sufficiently long to be assured that the
+block will stay in the block chain before handing over the goods.
+
+Q: What can be done to speed up transactions on the blockchain?
+
+A: I think the constraint here is that 10 minutes needs to be much
+larger (i.e. >= 10x) than the time to broadcast a newly found block to
+all peers. The point of that is to minimize the chances of two peers
+finding new blocks at about the same time, before hearing about the
+other peer's block. Two new blocks at the same time is a fork; forks
+are bad since they cause disagreement about which transactions are
+real, and they waste miners' time. Since blocks can be pretty big (up
+to a megabyte), and peers could have slow Internet links, and the
+diameter of the peer network might be large, it could easily take a
+minute to flood a new block. If one could reduce the flooding time,
+then the 10 minutes could also be reduced.
+
+Q: Bitcoin is limited to processing no more than a few transactions
+per second, due to the 10 minutes and the limit of one megabyte per
+block. Why the one megabyte limit?
+
+A: I think the worry was that huge blocks would take a long time to
+flood to peers with low-speed links. Here's a discussion:
+https://en.wikipedia.org/wiki/Bitcoin_scalability_problem
+
+When Bitcoin was originally designed, the intent was that lots of
+ordinary people do the mining on ordinary computers, connected with
+relatively slow home Internet links. Such a system could not have
+supported a huge transaction rate, and would have taken a long time to
+flood new blocks. The original design has proved difficult to modify,
+since there's no central authority that can change things.
+
+Q: The entire blockchain needs to be downloaded before a node can
+participate in the network. Won't that take an impractically long time
+as the blockchain grows?
+
+A: It's true that it takes a while for a new node to get all the
+transactions. But once a given server has done this work, it can save
+the block chain, and doesn't need to fetch it again. It only needs to
+know about new blocks, which is not a huge burden. On the other hand
+most ordinary users of Bitcoin don't run full Bitcoin nodes; instead
+they trust a few full nodes to answer questions about whether coins
+have already been spent.
+
+Q: Is it feasible for an attacker to gain a majority of the computing
+power among peers? What are the implications for bitcoin if this happens?
+
+A: It may be feasible; some people think that big cooperative groups
+of miners have been close to a majority at times:
+http://www.coindesk.com/51-attacks-real-threat-bitcoin/
+
+If >50% of compute power is controlled by a single entity, they can
+double-spend bitcoins: transfer a coin to one payee, and then generate
+a new fork from before that transaction in which the transaction
+doesn't exist. Bitcoin's security would be broken if this happened.
+
+Q: From some news stories, I have heard that a large number of bitcoin
+miners are controlled by a small number of companies.
+
+A: True. See here: https://blockchain.info/pools. It looks like four
+mining pools together hold about half of the compute power today.
+
+Q: Are there any ways for Bitcoin mining to do useful work, beyond simply
+brute-force calculating SHA-256 hashes?
+
+A: Maybe -- here are two attempts to do what you suggest:
+https://www.cs.umd.edu/~elaine/docs/permacoin.pdf
+http://primecoin.io/
+
+Q: There is hardware specifically designed to mine Bitcoin. How does
+this type of hardware differ from the type of hardware in a laptop?
+
+A: Mining hardware has a lot of transistors dedicated to computing
+SHA256 quickly, but is not particularly fast for other operations.
+Ordinary server and laptop CPUs can do many things (e.g. floating
+point division) reasonably quickly, but don't have so much hardware
+dedicated to SHA256 specifically. Some Intel CPUs do have instructions
+specifically for SHA256; however, they aren't competitive with
+specialized Bitcoin hardware that massively parallelizes the hashing
+using lots of dedicated transistors.
+
+Q: The paper estimates that the disk space required to store the block
+chain will grow by 4.2 megabytes per year. That seems very low!
+
+A: The 4.2 MB/year is for just the block headers, and is still the
+actual rate of growth. The current 470+GB is for full blocks.
+
+Q: Would the advent of quantum computing break the bitcoin system?
+
+A: Here's a plausible-looking article:
+http://www.bitcoinnotbombs.com/bitcoin-vs-the-nsas-quantum-computer/
+Quantum computers might be able to forge bitcoin's digital signatures
+(ECDSA). That is, once you send out a transaction with your public key
+in it, someone with a quantum computer could probably sign a different
+transaction for your money, and there's a reasonable chance that the
+bitcoin system would see the attacker's transaction before your
+transaction.
+
+Q: Bitcoin uses the hash of the transaction record to identify the
+transaction, so it can be named in future transactions. Is this
+guaranteed to lead to unique IDs?
+
+A: The hashes are technically not guaranteed to be unique. But in
+practice the hash function (SHA-256) is believed to produce different
+outputs for different inputs with fantastically high probability.
+
+Q: It sounds like anyone can create new Bitcoins. Why is that OK?
+Won't it lead to forgery or inflation?
+
+A: Only the person who first computes a proper nonce for the current
+last block in the chain gets the 6.25-bitcoin reward for "mining" it. It
+takes a huge amount of computation to do this. If you buy a computer
+and have it spend all its time attempting to mine bitcoin blocks, you
+will not make enough bitcoins to pay for the computer.
+
+Q: The paper mentions that some amount of fraud is admissible; where
+does this fraud come from?
+
+A: This part of the paper is about problems with the current way of
+paying for things, e.g. credit cards. Fraud occurs when you buy
+something on the Internet, but the seller keeps the money and doesn't
+send you the item. Or if a merchant remembers your credit card number,
+and buys things with it without your permission. Or if someone buys
+something with a credit card, but never pays the credit card bill. Or
+if someone buys something with a stolen credit card.
+
+Q: Has there been fraudulent use of Bitcoin?
+
+A: Yes. I think most of the problems have been at web sites that act
+as wallets to store peoples' bitcoin private keys. Such web sites,
+since they have access to the private keys, can transfer their
+customers' money to anyone. So someone who works at (or breaks into)
+such a web site can steal the customers' Bitcoins.
+
+If people used Bitcoin to buy things, we'd probably see fraud in the
+form of sellers accepting payment but not delivering the goods.
+
+Q: Satoshi's paper mentions that each transaction has a transaction
+fee that is given to whoever mined the block. Why would a miner not
+simply try to mine blocks with transactions with the highest
+transaction fees?
+
+A: Miners do favor transactions with higher fees. You can read about
+typical approaches here:
+https://en.bitcoin.it/wiki/Transaction_fees
+And here's a graph (the red line) of how long your transaction waits
+as a function of how high a fee you offer:
+https://bitcoinfees.github.io/misc/profile/
+
+Q: Why would a miner bother including transactions that yield no fee?
+
+A: I think many don't mine no-fee transactions any more.
+
+Q: How are transaction fees determined/advertised?
+
+A: Have a look here:
+https://en.bitcoin.it/wiki/Transaction_fees
+Different miners use different strategies to decide
+which transactions to include in blocks.
+It sounds like (by default) wallets look in the block chain at the
+recent correlation between fee and time until a transaction is
+included in a mined block, and choose a fee that correlates with
+relatively quick inclusion.
+Fees are typically around a dollor or two per transaction.
+
+Q: What are some techniques for storing my personal bitcoins, in
+particular the private keys needed to spend my bitcoins? I've heard of
+people printing out the keys, replicating them on USB, etc. Does a
+secure online repository exist?
+
+A: Any scheme that keeps the private keys on a computer attached to
+the Internet is a tempting target for thieves. On the other hand, it's
+a pain to use your bitcoins if the private keys are on a sheet of
+paper. So my guess is that careful people store the private keys for
+small amounts on their computer, but for large balances they store the
+keys offline.
+
+Q: What other kinds of virtual currency were there before and after
+Bitcoin (I know the paper mentioned hashcash)? What was different
+about Bitcoin that led it to have more success than its predecessors?
+
+A: There were many previous proposals for digital cash systems, none
+with any noticeable success. It's tempting to think that Bitcoin has
+succeeded because its design is better than others: that it has
+just the right blend of incentives and decentralization and ease of
+use. But there are too many forgotten yet apparently well-designed
+technologies out there for me to believe that.
+
+Q: What happens when more (or fewer) people mine Bitcoin?
+
+A: Bitcoin adjusts the difficulty to match the measured compute power
+devoted to mining. So if more and more computers mine, the mining
+difficulty will get harder, but only hard enough to maintain the average
+inter-block interval at 10 minutes. If lots of people stop mining, the
+difficulty will decrease. This mechanism won't prevent new blocks from
+being created, it will just ensure that they are created about every
+10 minutes on average.
+
+Q: Is there any way to make Bitcoin completely anonymous?
+
+A: Have a look here: https://en.wikipedia.org/wiki/Zerocoin
+
+Q: If I lose the private key(s) associated with the bitcoins I own,
+how can I get my money back?
+
+A: You can't.
+
+Q: What do people buy and sell with bitcoins?
+
+A: Much of the action in bitcoin is investment: people buying bitcoin
+in the hope that its price will go up. There seems to be a fair amount
+of illegal activity that exploits Bitcoin's relative anonymity (buying
+illegal drugs, demanding ransom). You can buy some ordinary (legal)
+stuff on the Internet with Bitcoin too; have a look here:
+https://cointelegraph.com/bitcoin-for-beginners/what-can-you-buy-with-bitcoin-a-beginners-guide-to-spending-your-btc
+It's a bit of a pain, though, so I don't imagine many non-enthusiasts
+would use bitcoin in preference to a credit card.
+
+Q: Why is bitcoin illegal in some countries?
+
+A: Here are some guesses.
+
+Many governments adjust the supply of money in order to achieve
+certain economic goals, such as low inflation, high employment, and
+stable exchange rates. Widespread use of bitcoin may make that harder.
+
+Many governments regulate banks (and things that function as banks) in
+order to prevent problems, e.g. banks going out of business and
+thereby causing their customers to lose deposits. This has happened to
+some bitcoin exchanges. Since bitcoin can't easily be regulated, maybe
+the next best thing is to outlaw it.
+
+Bitcoin seems particularly suited to certain illegal transactions
+because it is fairly anonymous. Governments regulate big transfers of
+conventional money (banks must report big transfers) in order to track
+illegal activity; but you can't easily do this with bitcoin.
+
+Q: Why do bitcoins have any value at all? Why do people accept it as
+money?
+
+A: Because other people are willing to sell things in return for
+bitcoins, and are willing to exchange bitcoins for ordinary currency
+such as dollars. This is a circular argument, but has worked many
+times in the past; consider why people view baseball trading cards as
+having value, or why they think paper money has value.
+
+Q: How is the price of Bitcoin determined?
+
+A: The price of Bitcoin in other currencies (e.g. euros or dollars) is
+determined by supply and demand. If more people want to buy Bitcoins
+than sell them, the price will go up. If the opposite, then the price
+will go down. There is no single price; instead, there is just recent
+history of what prices people have been willing to buy and sell at on
+public exchanges. The public exchanges bring buyers and sellers
+together, and publish the prices they agree to:
+
+  https://bitcoin.org/en/exchanges
+
+Q: Why is the price of bitcoin so volatile?
+
+A: The price is driven partially by people's hopes and fears. When
+they are optimistic about Bitcoin, or see that the price is rising,
+they buy so as not to miss out, and thus bid the price up further.
+When they read negative news stories about Bitcoin or the economy in
+general, they sell out of fear that the price will drop and cause them
+to lose money. This kind of speculation happens with many goods;
+there's nothing special about Bitcoin in this respect. For example:
+
+  https://en.wikipedia.org/wiki/Tulip_mania
+
+Q: How should we think about which parts of Bitcoin's design solve
+which problems?
+
+A: Here's one way to think about problems and solutions.
+
+Because Bitcoin transactions are signed, they can't be forged without
+the owner's private key, so money can't directly be stolen. The
+remaining attacks are theft of private keys, and double-spending by
+causing different parties to see different transactions or by causing
+transactions to disappear.
+
+All Bitcoin peers flood all the blocks they know of to other peers, so
+it's likely that all peers will know of all transactions. Thus it's
+hard to reveal a transaction to one peer, but conceal it from another.
+
+Each block contains a hash over what the block's creator thought was
+the previous block in the chain, and thus implicitly over the whole
+chain back to the origin. This means there's a unique and agreed-on
+sequence of blocks (and transactions) leading up to each block, but
+leaves open the possibility that the blocks form a tree with multiple
+forks, rather than a single chain.
+
+One fork could contain a transaction transferring funds to one
+recipient, and another fork could contain a transaction transferring
+the same funds to a different recipient. So it's important that the
+peers agree on which is the "real" fork, so that they agree on who
+owns what. It's also important that it be hard for someone to cause
+agreement to switch from one fork to another; such a switch would
+allow double-spending.
+
+Part of Bitcoin's plan for agreement is that peers always use the fork
+with the longest path from the origin. But what if two leaves are the
+same distance from the origin? Bitcoin's proof-of-work mining
+mechanism makes it likely that one peer will mine a new block
+extending one of these leaves significantly before any other peer
+completes mining; and will flood that block to all peers; and then
+most peers will agree that the newly mined block forms the longest
+fork, breaking the tie. The winning miner is effectively randomly
+selected, making it likely that it is honest and will follow the rules
+and actually flood the block.
+
+An attacker could try to double-spend by transferring funds one way,
+and then causing an alternate fork with a different spend to grow
+longer than the original fork; the longest-fork rule would then cause
+everyone to switch forks. Bitcoin's proof-of-work mining makes it hard
+to force a switch from the longest fork to an initially shorter fork,
+since more peers will be working to extend the longest fork than to
+extend the fraudulent fork. Because a switch from one fork to another
+is not impossible if the longest fork is only one or two blocks
+longer, careful recipients only believe in a transaction if it's still
+in the longest fork after a few more blocks have been mined.

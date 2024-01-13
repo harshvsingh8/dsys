@@ -1,0 +1,93 @@
+6.824 Spanner FAQ
+
+Q: What is an atomic clock?
+
+A: A very stable oscillator. There are two main technologies that go
+by the name "atomic clock": rubidium clocks and cesium clocks. Both
+exploit changes in the state of the outer electron, which involve
+specific quanta of energy and thus wavelength. One can tune a signal
+generator to precisely that wavelength by watching how excited the
+electrons are. An atomic clock is just the oscillator part of a clock:
+it produces a frequency that can cause a clock to tick at exactly the
+right rate, but does not by itself know what time it is. To provide
+time, an atomic clock must initially be synchronized with the time,
+typically via GPS (which itself is fed the time by a bunch of atomic
+clocks).
+
+Q: What kind of atomic clock does Spanner use?
+
+A: Sadly the paper doesn't say. Rubidium clocks are typically a few
+thousand dollars (e.g. https://thinksrs.com/products/fs725.html).
+Rubidium clocks drift by perhaps a few microseconds per week, so they
+need to be re-synchronized to UTC (typically by GPS) every once in a
+while. Cesium clocks cost perhaps $50,000; the HP 5071A is a good
+example. A cesium clock doesn't drift. Of course, any one clock might
+fail or suffer a power failure, so even with perfect cesium clocks you
+still need more than one and the ability to synchronize to UTC. My
+guess, based on price, is that Spanner uses rubidium clocks that are
+synchronized with GPS receivers.
+
+Q: How does TrueTime select intervals in a way that's guaranteed to
+contain the correct time?
+
+A: Here a simple example of the kind of reasoning it uses.
+
+Suppose master time server S1 has the correct time (from GPS or an
+atomic clock). S2 sends a request to S1 asking the time, and gets a
+response. The response says "10:00:00 AM" and it arrives two seconds
+after S2 sent the request (it's reasonable to assume that S2 can time
+how long things take even though it doesn't know the absolute time).
+Since the whole request/response took two seconds, S2 can conclude
+that the network might have delayed the request by up to two seconds;
+or delayed the response by up to two seconds; but no more than that.
+So S2 can conclude that, at the moment it receives the response, that
+the correct time must be between 10:00:00 and 10:00:02.
+
+Q: How does external consistency relate to linearizability and
+serializability?
+
+A: External consistency seems to be equivalent to linearizability, but
+applied to entire transactions rather than individual reads and
+writes. External consistency also seems equivalent to strict
+serializability, which is serializability with the added constraint
+that the equivalent serial order must obey real time order. The
+critical property is that if transaction T1 completes, and then
+(afterwards in real time) transaction T2 starts, T2 must see T1's
+writes.
+
+Q: Why is external consistency desirable?
+
+A: Suppose Hatshepsut changes the password on an account shared by her
+workgroup, via a web server in a datacenter in San Jose. She whispers
+the new password over the cubicle wall to her colleage Cassandra.
+Cassandra logs into the account via a web server in a different
+datacenter, in San Mateo. External consistency guarantees that
+Cassandra will observe the change to the password, and not, for
+example, see a stale replica.
+
+Q: Could Spanner use Raft rather than Paxos?
+
+A: Yes. At the level of this paper there is no difference. At the time
+Spanner was being built, Raft didn't exist, and Google already had a
+tuned and reliable Paxos implementation. Have a look at the paper
+Paxos Made Live by Chandra et al.
+
+Q: What is the purpose of Spanner's commit wait?
+
+A: Commit wait ensures that a read/write transaction does not complete
+until the time in its timestamp is guaranteed to have passed. That
+means that a read/only transaction that starts after the read/write
+transaction completes is guaranteed to have a higher timestamp, and
+thus to see the read/write transaction's writes. This helps fulfil the
+guarantee of external consistency: if T1 completes before T2 starts,
+T2 will come after T1 in the equivalent serial order (i.e. T2 will see
+T1's writes).
+
+Q: Does anyone use Spanner?
+
+A: It's said that hundreds of Google services depend on Spanner. The
+paper talks about its use by Google's advertising system. Google's
+Zanzibar Authorization system uses Spanner. It's offered as a service
+to Google's cloud customers in the form of Cloud Spanner. The
+CockroachDB open-source database is based on the Spanner design.
+

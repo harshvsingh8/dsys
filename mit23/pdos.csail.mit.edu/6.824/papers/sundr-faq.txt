@@ -1,0 +1,93 @@
+FAQ Secure Untrusted Data Repository (SUNDR) (2004)
+
+Q: SUNDR provides a means to verify whether or not files were tampered
+with. But does it hide the actual files themselves from a malicious
+server / do any sort of encryption on them?
+
+No. SUNDR as is provides integrity, but not confidentiality.  It could
+be extended with confidentiality by encrypting files.
+
+Q: How slow/fast is the computation of an i-handle in a fairly large
+file system?
+
+Computing SHA-1s is quite fast (~10 cycles per byte). Furthermore, if
+you change one block, you just recompute the hash on that one block, and then
+hash all the blocks to get you back up to the root. The signing part is
+the expensive part. The sha overhead is definitely not neglible,
+however, and the paper proposes to avoid the cost of recomputing hash
+trees over several operations by allowing an i-handle to store the
+hash and small log of changes that have been made to the i-table. This
+also speeds up the checking for clients that have checked a recent
+version; they can just apply the several operations in the log.
+
+Q: What are fork and fetch-modify consistency?
+
+A fork is an attack in which a malicious server presents different file
+system contents to different users. Such attacks are possible in SUNDR.
+For example, if user X updates file F, and later Y reads F, but the
+server shows Y the old content of F (from before X updated it), that's a
+fork attack.
+
+Fork consistency means that, if the server ever conceals any operation
+of user X from user Y, the server cannot show X and Y any of each
+other's subsequent operations. Once the server has concealed an
+operation, it must basically maintain two different version of the file
+system, one reflecting just X's operations, and the other just Y's.
+
+Fetch-modify consistency is what you get when the server is acting
+correctly: every user sees the effects of every other user's operations.
+
+Q: If a fork won't be detected in SUNDR unless two users communicate,
+are there any instances where users may not ever communicate with each
+other, and also what does this "communication" look like in this
+system or between users in a file system generally?
+
+By communication the authors mean any out-of-band communication
+between users (e.g., email, chat, etc.).  For example, if user A tells
+user B please look at file "x", and B doesn't see "x", then they know
+the server forked the file system (or user A is lying to user B).
+Other than out-of-band communication, the authors also suggest using a
+time-stamp box.  In bitcoin, there is yet another method to settle on
+a fork, which we will discuss next week.
+
+Q: What are the current applications of SUNDR in products or internal
+systems?
+
+As far as I know, none.  But the ideas are powerful and you see them in
+other decentralized systems such as git, ledgers, etc.  The one
+commercial system that I know off that is directly influenced by SUNDR
+is keybase (which was acquired by zoom).
+
+Q: In what scenarios would you choose to store data on untrusted servers?
+
+You would not store your data on a server you knew to be already
+corrupt, but you might use a server you assumed was trustworthy but
+later was compromised. The attacker may change files on your server and
+now you have a problem, because recovering from such an attack is
+difficult. If this server stores the source of Debian Linux, as in the
+attack mentioned in the paper, then the problem is very serious.
+Similar attacks happen: Canonical was compromised in 2019.
+
+Q: Why is fork consistency good? It seems to allow forks -- aren't
+forks bad?
+
+A: Indeed, a fork is not at all desirable. However, with ordinary
+assumptions, it seems to be impossible to prevent malicious servers
+from forking their clients -- from hiding some updates from some
+clients. So we're forced to live with the possibility of forks.
+
+What SUNDR does is limit how much freedom the server has to pick and
+choose which operations it hides and reveals. In particular, SUNDR
+restricts the server so that it can only fork -- it cannot join. This
+means that the server can reveal all of X's updates to Y before a
+certain point (the fork), and hide all of X's updates from Y after
+that point, but the server cannot hide one of X's updates but reveal a
+later one of X's updates. Once the server has forked two clients, the
+server can never allow the clients to see subsequent updates from each
+other without revealing that the server forked them.
+
+The larger point is that the consequences of a fork are likely to be
+pretty obvious (cooperating users no longer see each other's updates),
+and thus people are likely to fairly quickly realize they've been
+forked. Then they will stop trusting their storage service, and switch
+to a different and hopefully more trustworthy service.

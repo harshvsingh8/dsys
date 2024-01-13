@@ -1,0 +1,175 @@
+Spark FAQ
+
+Q: How does Spark achieve high performance?
+
+A: At a high level, the answer is parallelism. Spark partitions
+(splits up, or shards) the data over many worker machines, and
+executes "narrow" transformations in parallel on those machines.
+
+Q: Why is the purpose of Spark's RDD abstraction?
+
+A: Applications describe to Spark the sequence of transformations they
+want Spark to apply to the original input in order to produce the
+final output. It's convenient in these descriptions for the
+application to name some of the stages, much as one names variables in
+ordinary programming, and RDDs are a way to do this naming.
+
+Q: What does the paper mean when it says transformations are
+lazy operations?
+
+A: Suppose your program calls a transformation function like filter()
+or map() on an RDD. What the executing program actually does at that
+point is add to a lineage graph that it's building that describes how
+to process your data. A call like filter() or map() does *not*
+actually filter or map the data when you call it.
+
+When your program calls an action function like count() or collect(),
+at that point Spark analyzes the lineage graph your program has built,
+and applies the computation it describes to your data (reads it from
+HDFS on a bunch of worker machines, actually does the filtering and
+mapping &c). The fact that nothing much happens when you call a
+transformation, and work only happens later, is why the paper says
+"lazy".
+
+The lazyness helps with performance because Spark gets to know about all
+the transformations, the whole lineage graph, before it starts doing any
+work. It can analyze the graph to decide things like how to partition
+the data over the workers. And, if a worker fails, Spark uses the graph
+to help it efficiently reconstruct the data that was lost with the
+worker.
+
+Q: Is Spark currently in use in any major applications?
+
+A: Yes: https://databricks.com/customers
+
+Q: How common is it for PhD students to create something on the scale
+of Spark?
+
+A: Unusual! It is quite an accomplishment. Matei Zaharia won the ACM
+doctoral thesis award for this work.
+
+Q: Should we view Spark as being similar to MapReduce?
+
+A: You can think of Spark as MapReduce and more. Spark can express
+computations that are difficult to express in a high-performance way
+in MapReduce, for example iterative algorithms. 
+
+There are systems that are better than Spark in incorporating new data
+that is streaming in, instead of doing batch processing. For example,
+Naiad (https://dl.acm.org/citation.cfm?id=2522738). Spark also has
+streaming support, although it implements it in terms of computations
+on "micro-batches" (see Spark Streaming, SOSP 2013).
+
+There are also systems that allow more fine-grained sharing between
+different machines (e.g., DSM systems) or a system such as Picolo
+(http://piccolo.news.cs.nyu.edu/), which targets similar applications
+as Spark.
+
+Q: Why are RDDs called immutable if they allow for transformations?
+
+A: A transformation produces a new RDD as output; it doesn't modify
+the input RDD.
+
+Q: Do distributed systems designers worry about energy efficiency?
+
+A: Not directly. They care about efficient use of compute, memory, and
+storage resources; minimizing use (and waste) of these resources tends
+also to reduce use of energy. Sometimes the concern is direct; for
+example see http://www.cs.cmu.edu/~fawnproj/.
+
+Big distributed systems often run in carefully designed datacenters,
+and the people who design datacenters care a lot about minimizing
+energy costs, both to run the computers and to cool them.
+
+Hardware designers pay a lot of attention to power use. For example,
+if some area of a chip isn't being intensively used, the hardware will
+reduce its clock rate or shut it down altogether.
+
+Q: How do applications figure out the location of an RDD?
+
+A: Application code isn't directly aware of where RDDs live. Instead,
+the Spark library decides on which servers to place the partitions of
+each RDD. The RDD objects that applications manipulate contain private
+fields in which Spark records location information (or, for RDDs not
+yet computed, the recipe for how to compute them from their input
+RDDs).
+
+Q: How does Spark achieve fault tolerance?
+
+Q: Spark remembers the sequence of transformations (the lineage) that
+led to each RDD. If a worker fails, typically some partitions of a
+bunch of RDDs will be lost along with the worker. Spark re-computes
+the missing partitions on other workers, using the lineage information
+to tell it what transformations to re-run with what input RDDs. The
+failure may have caused input RDDs to be lost as well, so Spark may
+have to start as far back as the original input files.
+
+If the programmer knows that re-computing an RDD would be too
+expensive (e.g. if it has "wide" inputs or is the result of many
+iterations), the programmer can ask Spark to replicate each partition
+of the RDD's data on multiple workers.
+
+Q: Why is Spark developed using Scala? What's special about the language?
+
+A: In part because Scala was fashionable when the project started.
+
+One good reason is that Scala provides the ability to serialize and
+ship user-defined code ("closures") as discussed in §5.2. This is
+fairly straightforward in JVM-based languages (such as Java and
+Scala), but tricky to do in C, C++ or Go, partly because of shared
+memory (pointers, mutexes, etc.) and partly because the closure needs
+to capture all variables referred to inside it (which is difficult
+unless a language runtime can help with it).
+
+Q: Does anybody still use MapReduce rather than Spark, since Spark seems
+to be strictly superior? If so, why do people still use MR?
+
+If the computation one needs fits the MapReduce paradigm well, there is
+no advantage to using Spark over using MapReduce.
+
+For example if the computation does a single scan of a large data set
+(map phase) followed by an aggregation (reduce phase), the computation
+will be dominated by I/O and Spark's in-memory RDD caching will offer
+no benefit since no RDD is ever re-used.
+
+Spark does very well on iterative computations with a lot of internal
+reuse, but has no architectural edge over MapReduce or Hadoop for simple
+jobs that scan a large data set and aggregate (i.e., just map() and
+reduceByKey() transformations in Spark speak). On the other hand,
+there's also no reason that Spark would be slower for these computations,
+so you could really use either here.
+
+Q: Is the RDD concept implemented in any systems other than Spark?
+
+Spark and the specific RDD interface are pretty intimately tied to
+each other. However, two key ideas behind RDDs -- deterministic,
+lineage-based re-execution and the collections-oriented API --
+pre-date Spark and have been widely used. For example, DryadLINQ,
+FlumeJava, and Cloud Dataflow offer similar collection-oriented APIs;
+and the Dryad and Ciel systems referenced by the paper also keep track
+of how pieces of data are computed, and re-execute that computation on
+failure, similar to lineage-based fault tolerance.
+
+Spark has recently moved away from RDDs towards "DataFrames", which
+implement a more column-oriented representation while maintaining the
+good ideas from RDDs.
+https://spark.apache.org/docs/latest/sql-programming-guide.html#datasets-and-dataframes
+
+Q: What is hash partitioning?
+
+Hash partitioning is an idea from databases to implement database
+joins efficiently.  Splitting an RDD into partitions using a hash
+means hashing the primary key of an RDD and storing all the records
+with the same hash in the same partition.  If you have two RDDs with
+the same primary keys, and you hash-partition them, then the
+partitions of the two RRDs with the same keys will end up on the same
+machine.  This is nice if you need to compute a join() on these two
+RRDs because the join() will not require communication with other
+machines, because the partitions with the same key are on the same
+machine.
+
+This shows up, for example, in the PageRank example with the links and
+ranks RRDs.  Their keys are URLs and hash partitioning ensure that
+entry for "mit.edu" for both RRDs end up on the same machine. So, when
+joining the two RDDs on "mit.edu", no communication is necessary with
+another machine.

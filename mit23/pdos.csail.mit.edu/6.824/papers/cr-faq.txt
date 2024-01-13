@@ -1,0 +1,240 @@
+6.824 FAQ for Chain replication for supporting high throughput and
+availability (OSDI 2004) by Renesse and Schneider
+
+Q: Is chain replication used in practice over other things like Raft
+or Paxos?
+
+A: Systems often use both. A common way of building distributed
+systems is to use a configuration server (called the master in the
+paper) for maintaining configuration info (e.g., who is primary?) and
+a replication system for replicating data.  Paxos/Raft are
+commonly-used to build the configuration server while the replication
+system often uses primary-backup or chain replication.  The reason to
+use Raft/Paxos for configuration server is it must handle split-brain
+syndrome.  The reason to use primary/backup for data replication is
+that it is simpler than Raft/Paxos and Raft, for example, is not good
+at for replicating large amounts of data.  The replication system can
+rely on the configuration server to avoid split-brain syndrome.
+
+Q: How does CR cope with network partition and prevent split brain?
+
+A: At a high level, a chain will pause operation if one of its servers
+or network links fails, and wait for the configuration server to notice the problem
+and reconfigure the chain. Let's consider separately the situation
+before the configuration server notices a problem, and after it notices.
+
+Before the configuration server notices (or if the configuration server doesn't notice any
+problem), if the partition prevents communication between successive
+chain servers, updates will stop completing because they can no
+longer travel down the chain all the way from head to tail. Read
+queries will continue to work for clients that can talk to the tail.
+The system is safe (linearizable), but not very live since updates
+can't complete.
+
+At some point the configuration server may see that it can't communicate with one or
+more of the chain servers, and will consider those servers to have
+failed (though they may actually be alive).
+
+If the configuration server can't talk to any of the chain's servers, then the
+master will do nothing, and the existing chain may continue to provide
+correct service (perhaps without completing updates) to the clients
+that can talk to it.
+
+If the configuration server thinks just the head is dead, it will direct clients to
+send updates to the 2nd server in the chain, and tell the 2nd server
+that it is now the head. But perhaps the old head is not dead, and
+merely partitioned from the configuration server. In that case, the paper does not
+explain how to avoid split brain: now there may be two servers
+operating as head and forwarding conflicting updates to the next
+server in the chain. You can imagine solutions -- for example the new
+head, which is the old 2nd server in the chain, could reject updates
+sent to it by the old head.
+
+If the configuration server thinks the tail is dead, it will tell clients to send
+read queries to the N-1'th server in the chain, and tell that server
+that it is now the tail. But perhaps the old tail is not dead, and
+merely partitioned from the configuration server. In that case, some clients may
+still send read queries to the old tail, which will now return stale
+values because it is no longer receiving updates from the chain.
+Again, this is split brain, but the paper doesn't explain how to avoid
+it. A possible solution is for the configuration server to grant a lease to the
+tail, and to delay designating any new tail until the previous tail's
+lease has expired.
+
+Q: What are the tradeoffs of Chain Replication vs Raft or Paxos?
+
+A: Both CR and Raft/Paxos are replicated state machines. They can be
+used to replicate any service that can fit into a state machine mold
+(basically, processes a stream of requests one at a time). One
+application for Raft/Paxos is object storage -- you'll build object
+storage on top of Raft in Lab 3. Similarly, the underlying machinery
+of CR could be used for services other than storage, for example to
+implement a lock server.
+
+CR is likely to be faster than Raft because the CR head does less work
+than the Raft leader: the CR head sends writes to just one replica,
+while the Raft leader must send all operations to all followers. CR
+has a performance advantage for reads as well, since it serves them
+from the tail (not the head), while the Raft leader must serve all
+client requests.
+
+However, Raft/Paxos and CR differ significantly in their failure
+properties. If there are N replicas, a CR system can recover if even a
+single replica survives. Raft and Paxos require a majority of the N
+replicas to be available in order to operate, so in that sense they
+are less tolerant of failure. But a CR chain has to pause updates if
+there's even a single failure, and must wait for the configuration
+server to notice and reconfigure the chain; in the paper's setup this
+takes ten seconds. Raft/Paxos, in contrast, can continue operating
+without interruption as long as a majority is available, so they
+handle a slow or flaky or briefly unavailable replica more smoothly
+than CR.
+
+Q: Would Chain Replication be significantly faster or slower than the
+kind of primary/backup used in GFS?
+
+A: If there are just two replicas, there's probably not much
+difference. Though maybe CR would be faster for writes since the tail
+can send responses directly to the client; in a classic primary/backup
+scheme, the primary has to wait for the backup to acknowledge a write
+before the primary responds to the client.
+
+If there are three or more replicas, the primary in a classic
+primary/backup system has to send each write to each of the replicas. If
+the write data is big, these network sends could put a significant load
+on the primary. Chain Replication spreads this networking load over all
+the replicas, so CR's head node might be less of a performance
+bottleneck than a classic primary. On the other hand maybe the
+client-observed latency for writes would be higher in CR.
+
+Q: Section 5.2 evaluates multiple chains. What does this mean?
+
+A: In Chain Replication, only the head and tail directly serve client
+requests; the other replicas help fault tolerance but not performance.
+Since the load on the head and tail is thus likely to be higher than
+the load on intermediate nodes, you could get into a situation where
+performance is bottlenecked by head/tail, yet there is plenty of idle
+CPU available in the intermediate nodes. 
+
+Section 5.2 uses CR in a way that avoids this limitation. A data
+center will probably have lots of distinct CR chains, each serving a
+fraction (shard) of the objects. Suppose you have three servers (S1,
+S2, and S3) and three chains (C1, C2, C3). Then you can have the three
+chains be:
+
+  C1: S1 S2 S3
+  C2: S2 S3 S1
+  C3: S3 S1 S2
+
+Now, assuming activity on the three chains is roughly equal, the load on
+the three servers will also be roughly equal. In particular the load of
+serving client requests (head and tail) will be roughly equally divided
+among the three servers.
+
+Q: Section 3 says servers are assumed to be fail-stop. Are servers
+typically fail-stop? How does that work?
+
+A: Servers, networks, disks, &c are not actually fail-stop. CPU
+hardware sometimes produces incorrect answers, disks and networks
+sometimes corrupt data, software sometimes has bugs that cause it to
+malfunction without warning, human operators sometimes mis-configure
+systems. Server hardware is designed to be fail-stop for some errors
+(checksums catch most corrupted network packets, ECC catches most RAM
+errors, &c), but not all errors.
+
+What the paper means by "we assume servers to be fail-stop" is "if all
+failures are fail-stop, then the claims we make in this paper will
+hold. If you encounter a non-fail-stop failure, then the claims in the
+paper may not hold."
+
+Most of the systems we'll look at assume fail-stop failures, and may
+silently malfunction if there are non-fail-stop ("Byzantine")
+failures. But there are designs that have good behavior in many
+non-fail-stop situations. First, systems derived from a paper titled
+Practical Byzantine Fault Tolerance (PBFT) by Castro and Liskov; PBFT
+is like Raft but the servers check each others' actions with extra
+rounds of cryptographically authenticated communication. Second,
+systems in which clients can check the correctness of results that
+servers return, typically by use of cryptographic hashes or
+signatures. This can be tricky because clients need to defend against
+a server that returns data whose signature or hash is correct, but is
+not the latest value. Systems like this include SUNDR and Bitcoin.
+
+Q: Is Chain Replication used by other systems?
+
+A: Some examples: Amazon's EBS, Ceph's Rados, Google's Parameter
+Server, COPS, and FAWN.
+
+Q: I'm getting confused with all the symbols (particularly the circle
+with a plus sign inside) and the invariants given.
+
+A: The confusion perhaps arises because the XOR symbol doesn't mean
+XOR on boolean values.  It is more like a union, but not set union
+because the left and right are not sets, but sequences.  My guess is
+that the analogy with boolean XOR symbol is that a CR operation can
+appear only in the left or only in the right side of the XOR on
+sequences (but not both).
+
+Q: This scheme would be bad if we care about latency right?
+
+A: Yes and No.  Yes, the latency of update operations is proportional
+to the length of the chain.  No, the latency of read operation is low:
+only the tail is involved.
+
+Q: The paper reports that chain replication has the highest MTBU when
+using the `rndpar` volume placement strategy. Are there any competing
+advantages offered by `ring` or is `rndpar` objectively better?
+
+A: Figure 7 suggests that for a small number of servers, ring has a
+slight advantage over rndpar. The reason is that, for a chain length
+of N, if N random servers fail, there is more likely to be some chain
+that uses just those N servers with rndpar than with ring. That's
+important because the chain on those servers then cannot be repaired.
+With more servers, rndpar has an advantage because it spreads the work
+of repair over more servers, so that repair is more likely to complete
+before the next failure. If failures occur faster than repair, that
+increases the chance that all of a chain's servers will fail before
+any can be repaired.
+
+Q: For the failure of other servers as described on page 5, what
+happens if the ack from the tail gets lost some time along the
+chain, and r never gets deleted from sent_i? Updates are not
+idempotent, so it can't just be resent down the chain, correct?
+
+A: Updates are pushed down the chain, one server at the time.  Thus
+only the one-but-last server is waiting for the tail's ack.  It will
+keep retrying until it gets the ack.  All updates are performed in
+order that the head made them; it is fine to do the same update a few
+times.
+
+Q: Question: In real systems, how important is the strong consistency
+guarantee (does it cause people to use this system over GFS-like
+systems?) If not, why do people prefer other systems?
+
+A: Programming with weak consistency can be difficult. I have seen
+no/few studies that quantify this. But, there is anecdotal evidence
+that this matters; for example, when Amazon changed to strong
+consistency for S3, Dropbox (a user of S3) was able to simplify their
+code significantly.
+
+Similarly, Google over the years has been offering services with
+stronger consistency for their programmers; for example, Spanner
+provides stronger consistency than GFS, partially to make programmers'
+lives easier.
+
+Q: To reduce latency, why not have an arrangement where we have the
+head, t - 2 concurrent middle servers, and a tail?
+
+A: You could but it complicates the design. Now the recovery is more
+complicated; who should take over if the head fails? New logic is
+required to ensure that the most up-to-date of the t-2 servers is the
+one chosen as head. In CR unmodified it is clear: the next server in
+the chain.
+
+Q: What's a "reliable FIFO link"?
+
+A: By "reliable FIFO link" the paper means "TCP over an ordinary
+network". I suspect also that each update includes the sequence number
+assigned to it by the head, to make it easier to ensure that the
+updates are sent and processed in order. This "reliable FIFO link" may
+fail, if the network stops delivering packets.
