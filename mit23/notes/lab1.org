@@ -1,0 +1,65 @@
+
+** Task
+
+  - Implement a worker process that calls application Map and Reduce
+    functions.
+  - Handles reading and writing files,
+  - A coordinator process that hands out tasks to workers and copes
+    with failed workers.
+
+
+** Design
+
+
+
+
+** Implementation Ideas
+   
+The MR applications adhere to the following contract:
+
+#+begin_src go
+
+// document - name of the file being processed.
+// value    - the input file content.
+// @return  - list of intermediate key-value pairs. 
+func Map(document string, value string) (res []mr.KeyValue) { }
+
+// key      - input key value (in this reducer scope)
+// values   - linked values for the given key from across the mappers.
+// @return  - one string result for the given key value.
+func Reduce(key string, values []string) string { }
+
+// intermediate key-value struct.
+type KeyValue struct {
+	Key   string
+	Value string
+}
+
+#+end_src
+
+The ~mrcoordinator~ makes (instantiates and starts server) a
+coordinator, and then waits for it to finish (i.e. until ~Done()~
+returns true). The reducer task count is fixed to 10, and the input
+file count determines the mapper tasks count. 
+
+#+begin_src go
+
+	m := mr.MakeCoordinator(os.Args[1:], 10)
+	for m.Done() == false {
+		time.Sleep(time.Second)
+	}
+
+#+end_src
+
+| Mapper tasks       | M, input files count                |
+| Reducer tasks      | R, 10 - hard-coded                  |
+| Intermediate files | M*R                                 |
+| Input files        | Given to ~MakeCoordinator~ as files |
+| Output files       |                                     |
+
+
+
+** Solution
+
+
+** Sample Runs and Tests
