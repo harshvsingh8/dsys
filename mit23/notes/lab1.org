@@ -170,8 +170,25 @@ A *worker* in turn would execute the following strategy (in loop):
      5. Atomically rename the output file.
      6. Call RPC *AckTaskCompletion* to the master.
       
+Some special considerations would be needed to provide better
+reliability and performance:
+
+ - Master should clean-up left-over intermediate and output files
+   for each fresh run.
+ - Map worker should either re-use or clean-up intermediate
+   files - these files may accumulate due to Map task failures from
+   the current run.
+ - Reduce worker should either re-use or clean-up output files - these
+   files may result due to failed Map tasks from the current run.
+
+In addition, the master and the workers should:
+
+ - Log details about all RPC interactions.
+ - Master should print Task Table, showing details of all tasks.
+
 
 ** Solution
+
 
 
 
