@@ -1,10 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
+	"os"
 	"time"
 )
 
@@ -55,9 +58,65 @@ func Worker(
 		case Wait:
 			time.Sleep(2 * time.Second)
 		case Map:
+			Mapper(mapf, nextTaskReply.TaskFileName, nextTaskReply.TaskSlot, nextTaskReply.ReducerCount)
+			ackArgs := AckTaskCompletionArgs{}
+			ackReply := AckTaskCompletionReply{}
+			ackArgs.TaskId = nextTaskReply.TaskId
+			if ok := call("Coordinator.AckTaskCompletion", &ackArgs, &ackReply); !ok {
+				fmt.Printf("!! AckTaskCompletion Failed!")
+			}
+			time.Sleep(4 * time.Second)
 		case Reduce:
+			time.Sleep(8 * time.Second)
 		default:
 			fmt.Printf("!! Worker - Task type not implemented: %s", nextTaskReply.TaskType.String())
+		}
+	}
+}
+
+//
+// Mapper handling
+//
+func Mapper(
+	mapf func(string, string) []KeyValue,
+	inputFile string,
+	mapSlot int,
+	reducerCount int) {
+	file, err := os.Open(inputFile)
+	if err != nil {
+		log.Fatalf("cannot open %v", inputFile)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", inputFile)
+	}
+	file.Close()
+
+	keyValues := mapf(inputFile, string(content))
+
+	keyValuesByReducer := make([][]KeyValue, reducerCount)
+
+	for _, kv := range keyValues {
+		reducerSlot := ihash(kv.Key) % reducerCount
+		keyValuesByReducer[reducerSlot] = append(keyValuesByReducer[reducerSlot], kv)
+	}
+
+	for i := 0; i < reducerCount; i++ {
+		tmpFile, err := CreateTempFile()
+		if err != nil {
+			log.Fatalf("cannot create temp file")
+		}
+		encoder := json.NewEncoder(tmpFile)
+		err = encoder.Encode(keyValuesByReducer[i])
+		fileInfo, err := tmpFile.Stat()
+		if err != nil {
+			log.Fatalf("cannot get path for the temp file, %+v", err)
+		}
+		tmpFile.Close()
+		intFileName := fmt.Sprintf("mr-int-%d-%d.json", i, mapSlot)
+		err = os.Rename(fileInfo.Name(), intFileName)
+		if err != nil {
+			log.Fatalf("cannot rename file: %+v", err)
 		}
 	}
 }
