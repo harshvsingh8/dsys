@@ -131,7 +131,7 @@ representative option:
 | R_00   | Reduce   |        0 |            |             | New       |
 |        |          |          |            |             |           |
 
-The master will observe the following logic for the task scheduling:
+The *master* will observe the following logic for the task scheduling:
 
  1. If there is any *new* Map task, the it supply that for execution.
  2. If there is any scheduled Map task which is long *delayed* for
@@ -143,7 +143,7 @@ The master will observe the following logic for the task scheduling:
     completed or scheduled (but not delayed), then it respond with
     *Wait* task.
 
-A worker in turn would execute the following strategy (in loop):
+A *worker* in turn would execute the following strategy (in loop):
 
  1. Requests the master for the next task.
  2. If next task is *None* then exit the worker.
@@ -159,7 +159,7 @@ A worker in turn would execute the following strategy (in loop):
        3. Rename JSON temp file as per the expected intermediate file
           name (as atomic file rename operation).
        4. Call RPC *AckTaskCompletion* to the master.
- 5.If the next is of *Reduce* type:
+ 5. If the next is of *Reduce* type:
      1. Assemble all intermediate files for the given reduce slot.
      2. Club all Values across all files for all Key.
      3. For each Key:
