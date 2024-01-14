@@ -3,27 +3,34 @@ package mr
 //
 // RPC definitions.
 //
-// remember to capitalize all names.
-//
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
+// Request/Reply for requesting new task to execute.
+type GetNextTaskArgs struct {
+	WorkerId string
 }
 
-type ExampleReply struct {
-	Y int
+type GetNextTaskReply struct {
+	TaskId       string
+	TaskType     TaskType
+	TaskSlot     int
+	TaskFileName string
+	MapperCount  int
+	ReducerCount int
 }
 
-// Add your RPC definitions here.
+// Request/reply for to ack task completion (by worker)
+type AckTaskCompletionArgs struct {
+	TaskId string
+}
 
+type AckTaskCompletionReply struct {
+	Status string
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

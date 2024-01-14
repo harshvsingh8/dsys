@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"time"
 )
 
 //
@@ -31,40 +32,33 @@ func ihash(key string) int {
 func Worker(
 	mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	workerId := pseudo_uuid()
+	fmt.Printf("Worker - started with Id: %s\n", workerId)
 
-	// Your worker implementation here.
+	for {
+		nextTaskArgs := GetNextTaskArgs{}
+		nextTaskArgs.WorkerId = workerId
+		nextTaskReply := GetNextTaskReply{}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+		fmt.Printf("Worker - Request Next Task...\n")
+		if ok := call("Coordinator.GetNextTask", &nextTaskArgs, &nextTaskReply); !ok {
+			fmt.Printf("!! GetNextTask Failed!")
+			continue
 
-}
+		}
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+		fmt.Printf("Worker - Next Task Received: %+v\n", nextTaskReply)
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
+		switch nextTaskReply.TaskType {
+		case None:
+			break
+		case Wait:
+			time.Sleep(2 * time.Second)
+		case Map:
+		case Reduce:
+		default:
+			fmt.Printf("!! Worker - Task type not implemented: %s", nextTaskReply.TaskType.String())
+		}
 	}
 }
 
