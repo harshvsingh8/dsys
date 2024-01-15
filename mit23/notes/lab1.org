@@ -60,7 +60,7 @@ application.
 |--------------------+-------------------------------------+-------------------------|
 | Input files        | Given to ~MakeCoordinator~ as files | As given by the caller. |
 | Intermediate files | M*R                                 | mr-int-{r}-{m}.json     |
-| Output files       | R                                   | mr-out-{r}.json         |
+| Output files       | R                                   | mr-out-{r}              |
 
 
 The implementation can happen in 3 steps - each with its own
@@ -123,13 +123,13 @@ The master would keep a task table for book-keeping all pending and
 current executing tasks. The following table indicates a
 representative option:
 
-| TaskId | TaskType | TaskSlot | ScheduleTo | ScheduledAt | Status    |
-|--------+----------+----------+------------+-------------+-----------|
-| M_00   | Map      |        0 | <w-p>      | <date-time> | Scheduled |
-| M_01   | Map      |        1 | <w-q>      | <date-time> | Scheduled |
-| ...    | Map      |          |            |             | New       |
-| R_00   | Reduce   |        0 |            |             | New       |
-|        |          |          |            |             |           |
+| TaskId   | TaskType | TaskSlot | ScheduleTo | ScheduledAt | Status    |
+|----------+----------+----------+------------+-------------+-----------|
+| Map-0    | Map      |        0 | <w-p>      | <date-time> | Scheduled |
+| Map-1    | Map      |        1 | <w-q>      | <date-time> | Scheduled |
+| ...      | Map      |          |            |             | New       |
+| Reduce-0 | Reduce   |        0 |            |             | New       |
+|          |          |          |            |             |           |
 
 The *master* will observe the following logic for the task scheduling:
 
