@@ -189,7 +189,32 @@ In addition, the master and the workers should:
 
 ** Solution
 
-
+Check the previous commits and the final version in the ~mr~
+directory.
 
 
 ** Sample Runs and Tests
+
+#+begin_src log
+harshvs@hvsurface:~/github/dsys/mit23/labs/src/main$ bash test-mr.sh 2> /dev/null
+*** Starting wc test.
+unexpected EOF
+--- wc test: PASS
+*** Starting indexer test.
+--- indexer test: PASS
+*** Starting map parallelism test.
+read unix @->/var/tmp/5840-mr-1000: read: connection reset by peer
+--- map parallelism test: PASS
+*** Starting reduce parallelism test.
+read unix @->/var/tmp/5840-mr-1000: read: connection reset by peer
+--- reduce parallelism test: PASS
+*** Starting job count test.
+--- job count test: PASS
+*** Starting early exit test.
+read unix @->/var/tmp/5840-mr-1000: read: connection reset by peer
+--- early exit test: PASS
+*** Starting crash test.
+read unix @->/var/tmp/5840-mr-1000: read: connection reset by peer
+--- crash test: PASS
+*** PASSED ALL TESTS
+#+end_src

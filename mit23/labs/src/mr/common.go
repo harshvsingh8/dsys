@@ -3,6 +3,7 @@ package mr
 import (
 	"crypto/rand"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -50,4 +51,26 @@ func CreateTempFile() (f *os.File, err error) {
 	}
 
 	return tempFile, nil
+}
+
+//
+// use ihash(key) % NReduce to choose the reduce
+// task number for each KeyValue emitted by Map.
+//
+func ihash(key string) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32() & 0x7fffffff)
+}
+
+//
+// Debug tracer
+//
+var isDebug bool = false
+
+func Tracef(format string, a ...interface{}) (n int, err error) {
+	if isDebug {
+		return fmt.Printf(format, a...)
+	}
+	return 0, nil
 }

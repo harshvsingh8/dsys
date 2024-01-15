@@ -33,7 +33,7 @@ type Coordinator struct {
 // the RPC argument and reply types are defined in rpc.go.
 //
 func (c *Coordinator) GetNextTask(args *GetNextTaskArgs, reply *GetNextTaskReply) error {
-	fmt.Printf("<< GetNextTask Req: %+v\n", args)
+	Tracef("<< GetNextTask Req: %+v\n", args)
 	reply.TaskId = ""
 	reply.TaskType = Wait
 	reply.TaskSlot = -1
@@ -110,7 +110,7 @@ func (c *Coordinator) GetNextTask(args *GetNextTaskArgs, reply *GetNextTaskReply
 				reply.TaskType = Reduce
 				reply.TaskId = selectedTask.TaskId
 				reply.TaskFileName = selectedTask.TaskFile
-				reply.TaskSlot = selectedTaskIndex
+				reply.TaskSlot = selectedTaskIndex - c.mapperCount
 
 			} else if !allReducersDone {
 				// There is no task to schedule but all reducers are not done yet - so ask to wait.
@@ -122,14 +122,14 @@ func (c *Coordinator) GetNextTask(args *GetNextTaskArgs, reply *GetNextTaskReply
 		}
 	}
 
-	fmt.Printf(">> GetNextTask Res: %+v\n", reply)
-	// fmt.Printf("Task Table:\n%+v\n", c.taskTable)
+	Tracef(">> GetNextTask Res: %+v\n", reply)
+	// Tracef("Task Table:\n%+v\n", c.taskTable)
 	return nil
 }
 
 func (c *Coordinator) AckTaskCompletion(args *AckTaskCompletionArgs, reply *AckTaskCompletionReply) error {
 
-	fmt.Printf("<< AckTaskCompletion Req: %+v\n", args)
+	Tracef("<< AckTaskCompletion Req: %+v\n", args)
 	{
 		c.tableLock.Lock()
 		defer c.tableLock.Unlock()
@@ -142,8 +142,8 @@ func (c *Coordinator) AckTaskCompletion(args *AckTaskCompletionArgs, reply *AckT
 			}
 		}
 	}
-	fmt.Printf(">> AckTaskCompletion Res %+v\n", reply)
-	// fmt.Printf("Task Table:\n%+v\n", c.taskTable)
+	Tracef(">> AckTaskCompletion Res %+v\n", reply)
+	// Tracef("Task Table:\n%+v\n", c.taskTable)
 	return nil
 }
 
@@ -161,7 +161,7 @@ func (c *Coordinator) server() {
 		log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
-	fmt.Printf("Coordinator server started.\n")
+	Tracef("Coordinator server started.\n")
 }
 
 //
@@ -176,7 +176,7 @@ func (c *Coordinator) Done() bool {
 			return false
 		}
 	}
-	fmt.Printf("** All Done() ***\n")
+	Tracef("** All Done() ***\n")
 	return true
 }
 
