@@ -1,0 +1,143 @@
+<html>
+<head>
+<title>Lab guidance</title>
+<link rel="stylesheet" href="../style.css" type="text/css">
+</head>
+<body>
+  
+<h1>Lab guidance</h1>
+
+<h2>Hardness of assignments</h2>
+  
+<p>Each lab task is tagged to indicate
+roughly how long we expect the task to take:
+  <ul>
+    <li><p><span class="easy">Easy</span>: A few hours.</li>
+    <li><p><span class="moderate">Moderate</span>: ~ 6 hours (per week).</li>
+    <li><p><span class="hard">Hard</span>: More than 6 hours (per week). If
+    you start late, your solution is unlikely to pass all tests.</li>
+  </ul>
+  
+<p>Most of the labs require only a modest amount of code
+(perhaps a
+few hundred lines per lab part), but can be conceptually difficult
+and may require a good deal of thought and debugging.
+Some of the tests are difficult to pass.
+
+<p>Don't start a lab the night before it is due; it's more
+efficient to do the labs in several sessions spread over multiple
+days. Tracking down bugs in distributed systems is difficult,
+because of concurrency, crashes, and an unreliable network.
+
+<h2>Tips</h2>
+
+<ul>
+  
+<li>Do the <a href="http://tour.golang.org/">Online Go tutorial</a> and
+  consult
+  <a href="https://golang.org/doc/effective_go.html">Effective Go</a>.
+    See <a href="https://golang.org/doc/editors.html">Editors</a> to
+    set up your editor for Go.
+  
+<li>Use Go's <a href="https://blog.golang.org/race-detector">race detector</a>, with <tt>go test -race</tt>. Fix any races it reports.
+
+
+<li>Read this <a href="https://thesquareplanet.com/blog/students-guide-to-raft/">guide</a>
+  for Raft specific advice.
+
+<li>Advice on <a href="raft-locking.txt">locking</a> in labs.
+
+<li>Advice on <a href="raft-structure.txt">structuring</a> your Raft lab.
+
+<li>
+This <a href="../notes/raft_diagram.pdf">Diagram of Raft interactions</a> may
+help you understand code flow
+between different parts of the system.
+
+<li>It may be helpful when debugging
+to insert print statements when a
+peer sends or receives a message, and collect the output in a file
+with
+<tt>go test &gt; out</tt>.  Then, by studying the trace of
+messages in the <tt>out</tt> file, you can identify where your
+implementation deviates from the desired behavior.
+
+<li>Structure your debug messages in a consistent
+format so that you can use <tt>grep</tt> to search for specific
+lines in <tt>out</tt>.
+
+<li>You might find <tt>DPrintf</tt> useful instead of
+  calling <tt>log.Printf</tt> directly to turn printing on and off as
+  you debug different problems.
+
+<li>Learn about Go's <tt>Printf</tt>format strings:
+<a href="https://golang.org/pkg/fmt/">Go format strings</a>.
+
+<li>You can use colors or columns to help you parse log output.
+    <a href="https://blog.josejg.com/debugging-pretty/">This post</a> 
+    explains one strategy.
+
+<li> To learn more about git, look at the
+<a href="https://git-scm.com/book/en/v2">Pro Git book</a> or the
+<a href="http://www.kernel.org/pub/software/scm/git/docs/user-manual.html">git user's manual</a>.
+
+
+</ul>
+
+<h3>Debugging</h3>
+
+<p>Efficient debugging takes experience. It
+helps to be systematic: form a hypothesis about a possible cause of the
+problem; collect evidence that might be relevant; think about the
+information you've gathered; repeat as needed. For extended debugging
+sessions it helps to keep notes, both to accumulate evidence and to
+remind yourself why you've discarded specific earlier hypotheses.
+
+<p>
+One approach is to progessively narrow down the specific point in
+time at which things start to go wrong. You could add code at various
+points in the execution that tests whether the system has reached the
+bad state. Or your code could print messages with relevant state
+at various points;
+collect the output in a file, and look through the file for the first
+point where things look wrong.
+
+<p>
+The Raft labs involve events, such as RPCs arriving or timeouts
+expiring or peers failing, that may occur at times you don't expect,
+or may be interleaved in unexpected orders. For example, one peer may
+decide to become a candidate while another peer thinks it is already
+the leader. It's worth thinking through the "what can happen next"
+possibilities.
+For example, when your Raft code releases a mutex, the
+very next thing that happens (before the next line of code
+is executed!) might be the delivery (and processing) of
+an RPC request, or a timeout going off. Add Print statements to find
+out the actual order of events during execution.
+
+<p>
+The Raft paper's Figure 2 must be followed fairly exactly. It is easy
+to miss a condition that Figure 2 says must be checked, or a state
+change that it says must be made. If you have a bug, re-check that all
+of your code adheres closely to Figure 2.
+
+<p>
+As you're writing code (i.e., before you have a bug), it may be worth
+adding explicit checks for conditions that the code assumes to be
+true, perhaps using Go's
+<a href="https://gobyexample.com/panic">panic</a>. Such checks may
+help detect situations where later code unwittingly violates the
+assumptions.
+
+<p>
+If code used to work, but now it doesn't, maybe
+a change you've recently made is at fault.
+
+<p>
+The bug is often in the very last place you think to look, so be
+sure to look even at code you feel certain is correct.
+
+<p>
+The TAs are happy to help you think about your code during office
+hours, but you're likely to get the most mileage out of limited office
+hour time if you've already dug as deep as you can into the situation.

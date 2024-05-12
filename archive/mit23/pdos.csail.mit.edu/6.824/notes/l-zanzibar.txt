@@ -1,0 +1,305 @@
+6.5840 2023 Lecture 19: Zanzibar
+
+Zanzibar: Google's Consistent, Global Authorization System (2019), by
+Pang et al.
+
+why are we reading this paper?
+  a distributed application -- not a key/value store!
+  makes sophisticated use of distributed storage
+  another interplay of performance, caching, consistency
+  security, which we've mostly ignored
+
+not unlike the Facebook/memcache situation
+  global, huge load, caching, consistency
+  100 TB of data, 10,000 servers, 30 locations globally
+  10 million client queries/second
+
+Zanzibar exploits two advantages vs Facebook/memcache
+  specific use case with particular consistency needs
+  powerful global storage system (Spanner)
+
+how does Zanzibar fit into Google?
+  [users, login, YouTube, Cloud, Drive, Zanzibar]
+  services hold objects, e.g. video files
+  need to decide whether each user access is permitted
+  need to allow users to specify who can read/write their items
+  Zanzibar pulls the authorization logic out into a common service
+    eliminates redundant implementations
+    uniform model for users
+    eases cross-service sharing, embedding
+
+authentication vs authorization
+  authentication ensures a user's identity -- e.g. username/password
+  authorization decides what an (authenticated) user is permitted to do
+  Zanzibar handles just authorization
+
+clients of Zanzibar are Google services
+  how does Zanzibar know clients will obey permissions?
+  all the code is written by Google, thus trustworthy
+
+*** What's the ACL model?
+
+the core Zanzibar API call:
+  check(object, user, action) -> yes/no
+
+implemented with Access Control Lists (ACLs)
+  ACL entries enumerate which users/groups can read/write/&c each object
+  object#relation@user
+  object: an identifier, perhaps a file name or unique ID
+  relation: owner, read, write, &c
+  user: user identifier, perhaps a number, global across Google
+  (I'm omitting namespaces)
+
+example:
+  o1#read@10
+  o1#read@20
+  o2#read@10
+
+groups
+  objects often have similar/identical sets of authorized users
+  so Zanzibar supports entries that describe groups
+  mit#member@10
+  mit#member@20
+  o3#read@mit#member
+  o4#read@mit#member
+
+groups are often nested
+  mit#member@mit-students#member
+  mit#member@mit-staff#member
+
+groups are indispensable
+  for ACL storage space
+  for management, e.g. when a new person joins an organization
+
+how does Zanzibar perform an authorization check?
+  at a high level for now
+  client sends a "check" request specifying object, relation, user
+  e.g. o3#read, 20
+  Zanzibar can look in its DB for all ACL entries starting with "o3#read"
+  due to groups, it probably won't find o3#read@20
+  it will find a bunch of group names, e.g. mit#member
+    and those groups may contain other groups
+      and maybe one of those groups has user 20 -> "access granted"
+      or maybe not -> "access denied"
+
+an ACL check is a search down a tree of groups
+            object
+             mit
+  mit-students   mit-staff
+   10, 30, 40     20, 45
+  
+an ACL check can be a lot of work if there are lots of big, nested groups
+
+*** Zanzibar service architecture
+
+deployed at 30 sites all over the world (Section 4)
+  to match deployment of Google services
+  so services have local access to Zanzibar
+
+at each site:
+  clients
+  Zanzibar aclservers -- handle client RPCs
+  Spanner servers -- store ACL entries
+
+how many Spanner servers for storage?
+  100 terabytes (Section 4)
+  times 30 sites * 2 replicas = 6000 terabytes
+  perhaps 4 TB of disk storage per Spanner server
+  so about 1500 Spanner servers, spread over 30 sites
+
+for each Spanner shard:
+  5 voting replicas in the USA (3.1.4)
+  two non-voting replicas in each of 30 sites
+
+note client objects are stored in some other system
+  e.g. GFS, Colossus, BigTable, some other Spanner deployment
+  not in the Spanner deployment that stores ACLs
+
+*** How does Zanzibar obtain good performance?
+
+what kind of performance do they need?
+  10 million client qps (4.1)
+  200 million internal lookups/second due to group searches (4.4)
+
+could clients just read the ACL info from Spanner?
+  how many Spanner servers would they need for 200 million reads/second?
+  Spanner paper Table 3 says 13k reads/second/server
+  200 million/second would require 15,000 Spanner servers
+    assumes perfect load-balance
+    and they say hot-spots are a serious problem
+
+ok, caching/computing layer of aclservers between clients and Spanner
+
+how is work divided among the aclservers?
+  by hash of object
+  so searches down group tree cause communication
+  RPC is (probably) "is rtm in group MIT?"
+
+why divide by object?
+  as opposed to having one aclserver do all the work of each client request
+  makes more effective use of aclserver cache RAM
+  allows parallelism for complex tree searches
+  most critically, helps with hot-spots by bringing together
+    simultaneous accesses for a given object
+
+what's a hot spot? what causes them?
+  Section 3.2.5 explains one example, presumably an important one
+  one user, many search results, so checking many objects'
+    ACLs for that user, simultaneously.
+  object ACLs often contain groups
+    same groups for related objects
+  so many simultaneous tests for the *same* user X in group Y
+    all handled by the same Spanner server
+    it's that Spanner server that's the hot spot
+
+hotspots are not about total load, but imbalance,
+  a sudden burst of work for a single Spanner server
+
+how does Zanzibar cope with hotspots?
+  * aclserver sharding scheme brings requests about same object together,
+    which helps caching.
+  * sharding scheme allows aggregation of Spanner lookup requests,
+    reduces overhead.
+  * RPC result caching, e.g. "rtm is in group MIT"
+    i.e. not just caching Spanner read results, but also computation results
+  * "lock table" to prevent redundant cache miss fetches from Spanner
+    e.g. if many search results need "is RTM in group 6.5840?"
+    again, important to bring all such requests to the same aclserver
+      so they all see the same lock table
+  * prefetch all object#relation@* for objects that Zanzibar
+    sees are used by many users.
+
+Section 4.4 says cache hit rate is only 10%
+  why so low?
+    paper doesn't say
+    lots of users, lots of objects
+    users may browser randomly (YouTube)
+    Google client apps may suppress redundant requests
+    thus Zanzibar may not see much locality (i.e. repeated requests)
+  10% is just hits in the RPC-level cache
+    probably doesn't include hits in aclserver's cache of Spanner data
+  why 10% hit rate nevertheless helpful?
+    paper says helps specifically for hot-spots:
+      simultaneous requests for the exact same item
+    the win isn't decrease in total Spanner load,
+      but decreased chance of one Spanner server seeing sudden high load
+
+what was the performance impact of all this?
+  the paper doesn't have a detailed explanation of performance
+  one view
+    4.4 says 10 million client requests result in 20 million Spanner reads
+    dividing by the 13,000 reads/second from Spanner paper
+    about 1500 Spanner servers required to handle this load
+    much better than 15,000 servers!
+  another view
+    Zanzibar has 10,000 servers (Section 4)
+    thus 1,000 client/requests/second/server
+    pretty good but not amazing
+
+*** How does Zanzibar ensure cache consistency?
+
+where's there's caching, there's stale data!
+  and consistency problems are potentially serious 
+    since Zanzibar is making security decisions
+
+why not always use the very latest ACL data?
+  i.e. linearizable?
+  Spanner replicas may not have seen the latest completed writes
+    Paxos, non-voting replicas
+  and aclserver caches would also have to be keep up to date
+    painful, as seen in Facebook/memcache paper
+  so Zanzibar design is not linearizable
+
+paper says the "new enemy" problem is the most important
+  consistency scenario to get right.
+
+Example A (simplified from Section 2.2):
+  1. Alice removes Bob from group G.
+  2. then Alice adds group G to ACL of document D1.
+  Bob should not be able to read D1.
+  i.e. if client sees update #2, it should also see update #1.
+
+Example B:
+  1. Alice removes Bob from document D2's ACL.
+  2. then Alice updates D2.
+  Bob should not be able to read the new content.
+  i.e. if client sees #2, it should also see #1.
+
+What inconsistencies *are* allowed?
+  Example C:
+    document D has group G in its ACL
+    Bob is a member of G
+    Alice removes Bob from G
+    Bob may be able to continue reading D (for a while)!
+  Example D:
+    document D has group G in its ACL
+    Alice adds Bob to G
+    Bob may not be able to read D (for a while)!
+
+Why are these inconsistencies OK?
+  paper does not discuss
+  for Example C, Bob could have read D and saved a copy,
+    so letting him continue to see D for a bit is not so bad.
+  for Example D, there's no security problem, just inconvenience.
+
+how does Zanzibar exploit weak-ish consistency to get performance?
+  yet not cause "new enemy" problems?
+
+relevant Spanner behavior
+  Spanner writes are linearizable (== externally consistent)
+    you can view them as happening one at a time in order
+    and that order conforms to wall-clock time order
+  Zanzibar can ask Spanner to read at a specific time in the past
+    read reflects all writes that happened before that time
+    true even for reads of items on different Spanner shards
+      due to TrueTime synchronization
+  if read time is too recent, Spanner forces the read to wait
+    since local replica may not be in the Paxos majority for recent writes
+    Zanzibar tries to avoid that
+
+for a given client request, Zanzibar uses same timestamp for all Spanner reads
+  in order to obtain a view that's consistent as of some point in time
+  i.e. not a mix of old and new ACL info
+
+Zanzibar intentionally reads at a timestamp somewhat in the past
+  so that Spanner can read without delay
+  3.2.1 describes adaptive scheme to choose default timestamp lag
+
+Example A works correctly regardless of what timestamp Zanzibar uses for reads
+  before write #1: G isn't yet in D1's ACL, so Bob can't read D1
+  before write #2: the same
+  after write #2: Bob isn't in group G
+  relies on Spanner being linearizable
+    and on Zanzibar using same timestamp to read G and D1's ACL
+
+what about requests served from Zanzibar's cached info?
+  Zanzibar tags each cached item with its Spanner write timestamp
+  so Zanzibar can access its cache as of a consistent point in time
+
+but what about Example B?
+  what keeps Zanzibar from using an old timestamp to read D2's ACL?
+
+zookies fix Example B
+  when Alice updates D2,
+    she asks Zanzibar for a "zookie",
+    which contains the current time.
+    this is the "content-change" check in 2.4.4.
+  Alice stores the zookie inside D2.
+  when Bob asks his client to read D2,
+    the client extracts the zookie from D2,
+    and asks Zanzibar to perform the ACL check at the zookie's timestamp.
+    (really no earlier than the timestamp)
+  the result: Zanzibar uses a timestamp new enough that it sees
+    that Bob was removed from the ACL.
+    but not so new that it causes read delay.
+
+consistency summary
+  exploits Spanner's linearizability and snapshot-in-time reads
+  exploits specific requirements of security to allow use of past snapshots
+  tags cached data with timestamps rather than trying to keep up to date
+  zookies help avoid using snapshots that are too old
+
+what about fault tolerance?
+  not much action here
+  the state is all in Spanner, which is fault-tolerant
+  it's nice to have infrastructure

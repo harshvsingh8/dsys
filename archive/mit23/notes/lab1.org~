@@ -1,0 +1,7 @@
+
+** Task
+
+  - Implement a worker process that calls application Map and Reduce functions.
+  - Handles reading and writing files,
+  - A coordinator process that hands out tasks to workers and copes with failed workers.
+

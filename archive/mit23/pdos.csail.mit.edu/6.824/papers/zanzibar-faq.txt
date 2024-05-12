@@ -1,0 +1,170 @@
+Zanzibar FAQ
+
+Q: What does the paper mean by causally consistent?
+
+A: Usually causal consistency refers to a model that defaults to
+eventual consistency, but has the added constraint that if client C1
+reads object O1 and then writes O2, and then client C2 reads O2 and
+sees C1's updates, and then C2 reads O1, C2 is guaranteed to see a
+version of O1 that's at least as up to date as what C1 read. Causal
+consistency is more consistent than eventual consistency, but less
+consistent than linearizability (or than timeline consistency, which
+is the same as linearizability). Causally consistent systems usually
+include a tracking mechanism that tells C2 what C1 had seen at the
+time C1 wrote O2.
+
+Zanzibar's consistency seems to be linearizability for writes (from
+Spanner's timeline consistency) and snapshot consistency for reads.
+Writes to Zanzibar ACLs are linearizable, and as a result writes can
+be viewed as a totally ordered sequence. Each client operation (like
+read and check) observes data at a single point in that sequence: a
+snapshot. That point may be significantly in the past, and thus reads
+generally yield stale data. If the client provided a zookie, the point
+is guaranteed to be no earlier than the time in the zookie.
+
+The only causal aspect to the design seems to be the zookies, which
+cause ACL checks on an object to take place in a snapshot at a time no
+earlier than when the object was last updated. The zookie contains
+more or less the time at which the object was updated (Section 2.4.4),
+not any information about causality specifically.
+
+Many of the paper's mentions of causal consistency are difficult to
+interpret, for example when the Abstract says that respecting causal
+ordering causes Zanzibar to provide external consistency. First,
+Zanzibar doesn't generally respect causal ordering; C2 may observe
+some data created by C1 and nevertheless perform a subsequent
+operation in a snapshot earlier than the one in which C1 operated.
+Second, Zanzibar is not generally externally consistent; if C1
+modifies an ACL, C2 may nevertheless observe an earlier version of the
+ACL, depening on what snapshot time C2 uses. Third, in the usual
+definitions, causal consistency is weaker than external consistency;
+external consistency implies causal consistency, but not the other way
+around.
+
+Q: If Bob is in a document's ACL, and then someone removes Bob from
+the ACL, and then Bob tries to access the document, Zanzibar may allow
+Bob's access. Since the ACL check will be done in a snapshot at the
+time the document was last modified (due to the zookie in the
+document), which might be before Bob was removed from the document.
+Why is this OK from the point of view of security?
+
+A: The paper does not explain. Perhaps the reason is that Bob might
+have read and stored a copy of the document while he was in the ACL.
+That being the case, there's not much security to be gained by
+forbidding Bob's access. And there's a big performance cost, since it
+would require doing all ACL checks with the freshest data, which may
+not have arrived yet at the local Spanner replica.
+
+Q: How did they configure spanner? How did they set it up to be a
+worldwide service with complete replicas in dozens of clusters?
+
+A: Section 3.1.4 suggests that each Spanner tablet has five voting
+replicas in the United States, plus a few dozen read-only replicas
+around the world. This means that writes (and reads that need the
+latest data) have to be sent to a server in the United States, which
+could take a while from some parts of the world. The paper says all
+the voting replicas are in the United States in order to keep Paxos
+agreement time from being too long.
+
+Q: What is the reason for zookies?
+
+A: When a client modifies a document, the client asks Zanzibar for the
+current timestamp (inside a zookie), and the client puts that zookie
+inside the modified document. Later, when some client wants to read
+the document and needs an ACL check, the client reads the zookie from
+the document and gives it to Zanzibar. Zanzibar looks inside the
+cookie, extracts the timestamp, and does the ACL check at a snapshot
+no earlier than the time in the zookie. Part of the point is for
+Zanzibar to use ACL information no earlier than the time at which the
+document update occured, to be consistent with the document updater's
+notion of who could read their update. In addition, the fact that the
+zookie's timestamp is usually well in the past means that later ACL
+checks can be done in an old snapshot, and don't require Zanzibar to
+wait for the latest data to be replicated in the local Spanner
+servers.
+
+Q: What does the paper mean by "opaque" zookies?
+
+A: Zanzibar puts a Spanner timestamp inside the zookie, and gives the
+zookie to the client. "Opaque" means that the client is not supposed
+to look inside the zookie to extract the timestamp. Nor is a client
+allowed to create its own zookies. This opaqueness gives the designers
+the chance to change the zookie format in the future without breaking
+existing clients.
+
+Q: What is Leopard?
+
+A: Many ACL entries are actually references to groups, meaning things
+like "anyone in group mit can read object X" or "anyone in group
+mit-eecs is also a member of group mit". So when Zanzibar executes a
+client's "can rtm read object X?" RPC, Zanzibar might have to search
+down a tree of these groups to see if the user in question is a member
+of a group that's a member of a group that's allowed to read the
+object in question.
+
+Leopard's job is to pre-compute the answers to these group searches.
+Leopard produces an index that enumerates all the users which the
+group hierarchy implies are transitively members of each group. So
+Leopard's index would say that rtm is a transitive member of group
+mit. The Leopard index allows Zanzibar to avoid doing searches in the
+group tree.
+
+The paper doesn't say under what circumstances Zanzibar uses Leopard vs
+searches the group tree.
+
+Q: What do normalized and denormalized mean?
+
+A: The paper doesn't say what it means by these terms. But, following
+the use of these terms in relational databases, normalized data
+probably means ACL entries in the form they were originally specified,
+as in Table 1. Denormalized data probably means information that's the
+result of pre-computation of results from multiple items of normalized
+data, intended to speed up lookups. For example, executing a check
+operation on normalized data might require descending a tree of group
+relationships; the result (if stored or cached) would be denormalized
+data, since it is the result of computation on multiple items of
+normalized data.
+
+The paper says Zanzibar by default uses only normalized data, stored
+in Spanner and in the aclserver caches. The usual reason for this is
+that it's complex to update or invalidate denormalized data when the
+underlying normalized data changes. However, avoiding pre-computation
+means that Zanzibar must often do a fair amount of work to execute
+client queries, for example descending trees of groups.
+
+The paper's Leopard indexing system generates and stores pre-computed
+results, which are denormalized data. Leopard keeps its data
+reasonably up-to-date by watching the changelog (Figure 2). The paper
+implies that Zanzibar uses Leopard only in exceptional circumstances.
+
+Somewhat confusingly, the RPC result cache described in 3.2.5 seems to
+be denormalized (the result of searches down the tree of groups), and
+keeping it consistent seems relatively straightforward, since each
+cached item reflects data at a single time-stamp.
+
+Q: Section 4.4 mentions a 10% cache hit rate -- why so low?
+
+A: One mystery here is that Section 4.4 says that Zanzibar's in-memory
+caching handles 200 million lookups/second. And that Zanzibar sends only
+20 million reads to Spanner per second. To me that looks like the
+in-memory cache has about a 90% hit rate.
+
+4.4 says the 10% hit rate applies to the cache of RPC results. So maybe
+part of the answer is that the aclservers have two different caches: one
+for RPC results, and a separate cache of records fetched from Spanner.
+The paper doesn't quite say this, but it's probably true.
+
+Maybe the paper quotes only the 10% RPC result hit rate because RPCs are
+much more expensive than in-memory lookups. Or perhaps because the
+authors were mostly worried about hot spots, and the RPC result cache is
+most relevant for that situation.
+
+Still, 10% is low regardless of what cache it refers to. To the extent
+that the RPC result cache holds entries like "rtm is allowed to view
+YouTube video XYZ", then 10% makes sense because there are a vast
+number of users, and a vast number of videos, and few users are likely
+to watch the same video multiple times, so you wouldn't expect much
+re-use (hitting) of cache entries. Probably the real value of the RPC
+result cache is for entries like "rtm is a member of group mit"; such
+an entry might be used multiple times, and might be complex to compute
+if it required searching sub-groups.

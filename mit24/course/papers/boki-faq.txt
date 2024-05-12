@@ -1,0 +1,48 @@
+Q: Has Boki been deployed?
+
+A: Not that I know off. The Boki paper is a very recent paper
+describing a new idea, which might influence future systems or papers.
+
+Q: Can Boki handle byzantine failures or is it only crash failures?
+
+A: Crash failures.
+
+Q: What kind of user codes make sense to deploy on Boki vs ones that
+don't?
+
+A: Lambda functions that are stateful. Lambda functions that are
+purely functional (e.g., resizing an image) have little benefit from
+Boki's support for stateful computations. Lambda functions that are
+stateful can benefit from Boki because Boki maintains local state
+across function invocations.  The Boki functions can manipulate that
+state through the LogBook API.
+
+Q: For the sequence numbers (in section 3), they say the sequence
+numbers are monotonically increasing but not guaranteed to be
+consecutive. When would they not be consecutive?
+
+A: Because different logbooks are merged into a shared log and
+the sequence number returned is the position of a record in
+the shared log.
+
+Q: what's the difference between a shared log and an operation log
+like in Raft?
+
+A: A shared log is an application-level abstraction.  Application can
+use a shared log, as a Raft-like log, to implement replicated state
+machines.  The shared log can also be used by applications to
+implement other abstractions (e.g., exactly-once durable functions,
+queues, k/v store); see the description of the Boki libraries.
+
+The shared-log itself must be implemented in a fault-tolerant way; the
+Boki implementation relies on Zookeeper and primary-back replication
+but could have used Raft instead.
+
+Q: What does Nightcore provide to Boki? Could Boki have been built on
+another FaaS runtime?
+
+A: In principles, yes.  Boki needs to have a runtime to run functions,
+which is what Nightcore provides.  Nightcore, however, can invoke
+functions with low cost; the Invoke results in Fig 11(c) won't be as
+good as without Nighcore.  Nightcore also provides fast communication,
+which also impacts the performance results positively.

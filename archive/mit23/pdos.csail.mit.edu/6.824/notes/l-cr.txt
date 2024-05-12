@@ -1,0 +1,349 @@
+6.5840 2022 Lecture 11: Chain Replication
+
+Chain replication for supporting high throughput and availability
+(OSDI 2004) by Renesse and Schneider
+
+a couple of topics today:
+  replicated state machines
+  revisit primary/backup replication
+  chain replication as a better primary/backup
+  compare p/b vs chain vs quorum
+  structure of sharded systems
+
+two approaches to replicated-state machine
+  1. run all ops through Raft/Paxos (lab 3)
+  2. configuration server plus primary-backup
+      GFS master + chunk replication
+      VM-FT: test-and-set + P/B replication
+      zookeeper + primary-backup
+    configuration server must be fault-tolerant
+
+why approach 2?
+  separation of concerns
+    configuration srv stores configuration info
+      who is primary, which server has what shard
+      who is the head of the chain
+      must handle split-brain syndrome
+        often uses paxos/raft
+        can proceed with majority
+    data replication protocol
+      primary-backup, chain replication or whatever
+      often simpler than raft (figure 2); doesn't need to handle split brain
+      can proceed if only 1 server is available (after reconfiguration)
+
+primary/backup (paper's Section 4)
+  old, widely used in various forms
+  GFS uses a (non-strict) p/b scheme for chunks
+  CR paper is an improved p/b
+
+the basic primary/backup arrangement
+  [diagram: CFG, clients, primary, two backups, state = key/value table]
+  primary numbers ops, to impose order if concurrent client ops arrive
+  primary forwards each to backups (in parallel)
+  primary waits for response from ALL backups, replies to client
+  primary can respond to reads w/o sending to backups
+  if primary fails, one of the backups becomes new primary
+    can proceed if even a single replica survives
+    so N replicas can survive N-1 failures -- better than Raft
+  a separate configuration service (CFG) manages failover
+    configuration = identity of current primary and backups
+    usually built on Paxos or Raft or ZooKeeper
+    pings all servers to detect failures
+    CFG must include at least one replica from
+      previous configuration in any new configuration.
+  if a backup fails, CFG must remove it from the configuration,
+    b/c the primary has to wait for all backups
+
+sometimes called ROWA (Read One Write All), as opposed to quorum
+  the "write all" is what allows us to tolerate N-1 failures
+    since every replica has all committed values, unlike quorums
+
+a few key properties we need to check for any strong replication scheme:
+  1. never reveal uncommitted data
+     i.e. data that might not survive a tolerated failure
+  2. after failure recovery, all replicas must agree!
+     if one saw last msg from primary, but the other did not
+  3. no split brain if network partitions
+     only one new primary; old primary must stop
+  4. able to recover after a complete failure
+
+#1 for primary/backup?
+  example bad situation:
+    put(x, 99) arrives at primary
+    get(x) immediately follows it
+      before primary gets backups' responses to put(x,99)
+    we said primary can serve reads w/o talking to backups
+    but it's not safe to return 99!
+  answer: either respond with old value,
+    or block read until all backups respond to put(x,99).
+
+#2 for primary/backup?
+  new primary could merge all replicas' last few operations.
+  or, elect as primary the backup that received the highest # op.
+  and new primary must start by forcing backups to agree with it
+
+#3 for primary/backup?
+  how to prevent backup from taking over if partitioned from primary?
+    and primary is still alive.
+    *don't* have backups make this decision!
+    only the CFG can declare a new primary + backups.
+      based on CFG's opinion of which servers it can reach.
+  what if the old primary is actually alive, but CFG can't talk to it?
+    how to prevent old primary from serving requests?
+    for updates:
+      old primary cannot respond to client requests until all
+        replicas in its configuration reply
+      at least one replica must be part of the new configuration
+      so replicas must be careful not to reply to an old primary!
+    for reads:
+      primary doesn't have to talk to backups for reads
+      so CFG must grant lease to primary
+
+Chain Replication was published at a time when only a few people
+  understood the detailed design of strongly consistent replication;
+  it's been influential, and a fair number of real-world systems build
+  on it.
+
+what p/b problems does Chain Replication aim to fix?
+  1. primary has to do a lot of work
+  2. primary has to send a lot of network data
+  3. re-sync after primary failure is complex, since backups may differ
+    
+the basic Chain Replication idea:
+  [clients, S1=head, S2, S3=tail, CFG (= master)]
+  (can be more replicas)
+  clients send updates requests to head
+    head picks an order (assigns sequence numbers)
+    head updates local replica, sends to S1
+    S1 updates local replica, sends to S2
+    S2 updates local replica, sends to S3
+    S3 updates local replica, sends response to client
+    updates move along the chain in order:
+      at each server, earlier updates delivered before later ones
+  clients send read requests to tail
+    tail reads local replica and responds to client
+
+benefit: head sends less network data than a primary
+
+benefit: client interaction work is split between head and tail
+
+The Question: Suppose Chain Replication replied to update requests
+  from the head, as soon as the next chain server said it received the
+  forwarded update, instead of responding from the tail. Explain how
+  that could cause Chain Replication to produce results that are not
+  linearizable.
+
+what if the head fails?
+  the CFG (master) is in charge of recovering from failures
+  CFG tells 2nd chain server to be new head
+    and tells clients who the new head is
+  will all (remaining) servers still be exact replicas?
+    they will soon!
+    in-order delivery means each server is identical
+      to the one before it, just missing last few updates
+    so each server needs to compare notes with successor and
+      just send those last few updates
+  some client update requests may be lost
+    if only the failed head knew about them
+    clients won't receive responses
+    and will eventually re-send to new head
+
+what if the tail fails?
+  CFG tells next-to-last server to be new tail
+    and tells clients, for read requests
+  next-to-last is at least as up to date as the old tail
+  for updates that new tail received but old tail didn't,
+    system won't send responses to clients.
+    clients will time out and re-send
+    Section 2 says clients are responsible for checking
+      whether timed-out operations have actually already
+      been executed (often harder than it sounds).
+
+what if an intermediate server fails?
+  CFG tells previous/next servers to talk to each other
+  previous server may have to re-send some updates that
+    it had already sent to failed server
+
+note that servers need to remember updates even after forwarding
+  in case a failure requires them to re-send
+  when to free?
+  tail sends ACKs back up the chain as it receives updates
+    when a server gets an ACK, it can free all through that op
+
+what's the argument that CR won't reveal an uncommitted update?
+  i.e. could client read a value,
+    but it then disappears due to a tolerated failure?
+  or could a client get a "yes" response to an update,
+    but then it's not there after a failure?
+  reads come from the tail
+    the tail only sees an update after every other server sees it
+    so after a failure, every server still has that update
+  update is responded to after it gets to the tail
+    at which point every server has it
+
+how to add a new server? ("extend the chain")
+  you need to do this to restore replication level after a failure.
+  again, CFG manages this
+  new server is added at the tail
+  a slow possibility:
+    tell the old tail to stop processing updates
+    tell the old tail to send a complete copy of its data to the new tail
+    tell the old tail to start acting as an intermediate server,
+      forwarding to the new tail
+    tell the new tail to start acting as the tail
+    tell clients about new tail
+  slow b/c we're pausing all updates for minutes or hours
+  better is to transfer a snapshot of the state in advance
+    then freeze the system just long enough to send the
+      last few updates to the new tail
+    then reconfigure and un-freeze
+    perhaps use ZooKeeper's fuzzy snapshot idea
+
+partition situation is much as in p/b
+  CFG makes all decisions
+    it will pick a single new head &c
+    based on its view of server liveness -- i.e. just in CFG's partition
+  new head is old 2nd server, it should ignore
+    updates from the old head, to cope with "what if old
+    head is alive but CFG thinks it has failed"
+  CFG needs to grant tail a lease to serve client reads,
+    and not designate a new tail until lease has expired
+
+p/b versus chain replication?
+  p/b may have lower latency (for small requests)
+  chain head has less network load than primary
+    important if data items are big (as with GFS)
+  chain splits work between head and tail
+    primary does it all, maybe more of a bottleneck
+  chain has simpler story for which server should take over if head fails,
+    and how ensure servers get back in sync
+
+chain (or p/b) versus Raft/Paxos/Zab (quorum)?
+  p/b can tolerate N-1 of N failures, quorum only N/2
+  p/b simpler, maybe faster than quorum
+  p/b requires separate CFG, quorum self-contained
+  p/b must wait for reconfig after failure, quorum keeps going
+  p/b slow if even one server slow, quorum tolerates temporary slow minority
+  p/b CFG's server failure detector hard to tune:
+    any failed server stalls p/b, so want to declare failed quickly!
+    but over-eager failure detector will waste time copying data to new server.
+    quorum system handles short / unclear failures more gracefully
+
+for a long time p/b (and chain) dominated data replication
+  Paxos was viewed as too complex and slow for high-performance DBs
+  recently quorum systems have been gaining ground
+    due to good toleration of temporarily slow/flaky replicas
+
+what if you have too much data to fit on a single replica group?
+  e.g. millions of objects
+  you need to "shard" across many "replica groups"
+
+sharding diagram:
+  [CFG, G1, G2, .., Gn, clients]
+  GFS looked like this
+  modern system might use ZK for CFG, chain or p/b or Raft for data
+
+how to lay out chains on server in a big sharding setup?
+  the paper's 5.2 / 5.3 / 5.4
+
+a not-so-great chain or p/b sharding arrangement:
+  each set of three servers serves a single shard / chain
+    shard A: S1 S2 S3
+    shard B: S4 S5 S6
+  problem: some servers will be more loaded than others
+    the primary in each group will be slow while the others have idle capacity
+    the head and tail will be more loaded than the middle
+    the under-loaded servers waste money!
+  problem: replacing a failed replica takes a long time!
+    the new server must fetch a whole disk of data over the network
+      from one of the remaining replicas
+    a terabyte at a gigabit/second takes two hours!
+    significant risk of remaining replicas failing before completion!
+
+a better plan ("rndpar" in Section 5.4):
+  split data into many more shards than servers
+    (so each shard is much smaller than in previous arrangement)
+  each server is a replica in many shard groups
+    shard A: S1 S2 S3
+    shard B: S2 S3 S1
+    shard C: S3 S1 S2
+    (this is a regular arrangement, but in general would be random)
+  for p/b, a server is primary in some groups, backup in other
+  for chain, a server is head in some, tail in others, middle in others
+  now request processing work is likely to be more balanced
+
+how does rndpar do for repair speed?
+  suppose one server fails.
+  say it participated in M replica groups, for M shards.
+  instead of designating a single replacement server, let's
+    choose M replacement servers, a different one for each shard.
+    these are existing servers, which we're giving a new responsibility.
+  now repair of the M shards can go on in parallel!
+    instead of taking a few hours, it will take 1/M'th that time.
+  
+how does rndpar do if three random servers fail?
+  as the number of shards on each server increases, it gets more
+    likely that *some* shard had its three replicas on
+    the three random servers that failed.
+  this is not ideal.
+  rndpar gives us fast repair, but it's somewhat undermined
+    by higher probability that a few failures wipes out all
+    replicas for some shard (Figure 7).
+
+conclusion
+  Chain Replication is one of the clearest descriptions of a ROWA scheme
+  it does a good job of balancing work
+  it has a simple approach to re-syncing replicas after a failure
+  influential: used in EBS, Ceph, Parameter Server, COPS, FAWN.
+  it's one of a number of designs (p/b, quorums) with different properties
+
+-----------------
+
+5.1 take-away:
+  chain *throughput* as high as p/b b/c limited by head/primary CPU
+  for 0% updates, chain limited by tail alone, and p/b limited by prim alone
+  for 100% updates, chain limited by head alone, and p/b limited by prim alone
+  only in the middle is there a difference b/c chain splits work
+    between head and tail
+  BUT network communication assumed to be free; in real life
+    p/b has a problem b/c prim must send to all backups
+  BUT write latency is a problem in the real world, since
+    client often waiting for "committed" reply
+
+5.2 take-away:
+  assume 1000s of chains and dozens of servers.
+  idea: split your data over many chains, and the chains
+    over a modest number of servers, so that every server
+    is in many chains, some as head, some as tail, some
+    in the middle
+  this balances the load of being head and tail vs middle.
+  Figure 5 doesn't seem to say much, maybe just that if
+    you have only 25 clients, then there's not much point
+    in having more than about 25 servers.
+
+5.3 take-away:
+  assume 1000s of chains and dozens of servers.
+  repair time is a big deal, since a single server can store
+    so much data that it takes hours to transfer over a
+    single network link.
+  when a *single* server fails, need to spread responsibility
+    for the data it replicated over *multiple* other servers,
+    to get fast parallel repair.
+
+5.4 take-away:
+  assume 1000s of chains and dozens of servers.
+  best for parallel recovery speed is if no constraints and
+    random placement, so that both sources and destinations
+    of recovery traffic are evenly-ish spread after a single
+    failure.
+  BUT if chains are randomly spread over servers, then *any*
+    combination of three (if chainlen=3) random server failures
+    has a good chance of destroying all replicas of *some* chain.
+  the ring topologies are a compromise: you can't spread
+    recovery load very widely, but a few random server failures
+    are less likely to destroy all of any one chain's replicas.
+  for their setup, speed of reconstruction seems to be more
+    important than simultaneous failures wiping out a chain.
+  however, they assume MTBF of a single server of 24 hours,
+    which does mean fast repair is crucial when repair can
+    take hours, but 24 hours seems unrealistically short.

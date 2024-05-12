@@ -1,0 +1,280 @@
+6.5840 2024 Lecture 14: Chardonnay
+
+Chardonnay: Fast and General Datacenter Transactions for On-Disk
+Databases, by Eldeeb et al., OSDI 2023
+
+Why are we reading this paper?
+  background: people want transactions; are forced to shard; thus two-phase commit
+  remember Spanner:
+    r/w transactions are slow -- 14ms
+    relies on fancy time synchronization
+    Chardonnay is partially a reaction to Spanner
+  a big goal: faster 2pc
+  very recent: summer 2023
+
+What's wrong with two-phase commit?
+  two rounds of slow-ish network messages
+  two slow synchronous disk writes (particpants, then coordinator)
+  locks must be held for the full commit time
+    delaying other transactions that use popular records
+
+How fast are 2pc components?
+  (approximately)
+  RPC round-trip: 200us (try pinging a nearby host)
+  write a random block on a disk and wait:
+    10 ms for a spinning disk
+    200 us for an ordinary SSD
+
+Figure 1 / Section 4 measures 2pc performance
+  it's a complex graph, not fully explained
+
+One lesson: faster RPC and faster log disk make a big difference
+  Baseline-Slow versus Baseline-Fast
+  eRPC
+  NVMe "disk"
+  these are new technologies, available post-Spanner
+
+what is eRPC? why is it fast?
+  ordinary RPC (as in Go's RPC) is slow
+    send: user, system call, copy to kernel buffer, NIC
+    recv: NIC DMA, kernel buffer, interrupt, schedule user, system call, copy
+    each part is only 1-10 microseconds but they add up
+    round trip around 100 us or more
+  eRPC
+    "kernel bypass"
+    NIC DMAs direct to user space -- no copy, no system call
+    user thread(s) poll DMA rings -- no interrupt, no scheduling
+    round trip of around 2 us!
+  plus (probably) uses expensive high-speed NIC and switches
+
+what is NVMe? why is it fast?
+  some kind of fast flash storage -- paper doesn't say
+    simulated with RAM!
+  the use this simulated NVMe for the logs: critical for 2pc
+  kernel bypass?
+  PCI-Express or RAM-like rather than SATA?
+  faster underlying flash?
+    Intel Optane with 10 us latency (discontinued...)
+    Toshiba XL-FLASH, 5 us
+    expensive, rare, but may be the future
+    
+Baseline-Fast is the *starting* point for Chardonnay
+  any modern two-phase commit could act like Baseline-Fast
+
+the more interesting implication of Figure 1:
+  look at Baseline-Fast (10%)
+  the left-hand bar is for a read transaction that had to read the disk
+  most of the time is spent reading the disk!
+    b/c eRPC and NVMe made other costs much less
+
+the paper's claim:
+  with fast RPC and NVMe, transaction time will often be dominated
+    by the time to read data from the disk.
+  and (for multi-record transactions) locks will be held while reading.
+  and if the locked records are "hot", that will block other transactions.
+  so 2pc performance may be limited by contention due to reads and locks.
+
+Chardonnay aims to reduce 2pc's lock contention.
+
+The big idea: dry-run
+  run each r/w transaction twice
+  once in read-only mode to cause data to be cached -- no locks
+  then for real: no disk waits, to reduce lock hold time,
+    to reduce impact on other transactions on the same records
+
+what do we need for dry runs?
+  programmer must write transaction as function that can be called twice
+    (the code snippet in Section 7.1)
+  suppress DB writes the first time -- easy
+  need lock-free reads (since the point was to reduce lock contention)
+  AND we need the reads to be properly transactional
+    can't just read whatever is in the DB
+    since that might break invariants and cause application to crash
+  aha, can use snapshot reads, as we saw in Spanner!
+
+another twist:
+  Chardonnay authors don't want to require special time sync scheme
+  so they need snapshot r/o transactions but without TrueTime
+
+the setup -- Figure 2
+  [diagram]
+  clients: run transaction code, not fault tolerant
+  KV service: sharded data, paxos replication, leaders
+    multiple versions for each key, tagged with epoch
+  TX state store: 2pc coordinator log, paxos replicated
+  Epoch Service: source of time-like epochs, paxos replicated
+
+Epoch Service
+  maintains just one number, the epoch
+  incremented every 10 ms
+  every transaction (including r/o) asks the epoch service for current epoch
+    so there's a notion that a transaction executes "in" a particular epoch
+  usually many transactions in each epoch
+  epochs are similar to time: only one epoch service, so
+    anyone who asks sees the same time.
+
+how do r/w transactions use epochs?
+  client sends reads and writes to appropriate KV leader
+    leaders maintain lock table in RAM (thus lost in crash)
+    leaders remember writes -- tentative
+  when client ready to try to commit:
+    send PREPARE requests to shard leaders
+      shard leaders log info via Paxos, and reply
+    in parallel, client asks epoch service for current epoch e
+    wait for replies...
+    abort if any shard says "no" (due to crash losing locks?)
+    client sends out COMMIT messages
+      with the epoch e
+    shard leaders log COMMIT through Paxos,
+      then perform writes,
+      then release locks,
+      and reply to client
+
+Each record in the DB appears in multiple versions.
+  version is <e,i>, where e is epoch of writer,
+  and i is a counter the leader maintains, starts at zero for each epoch.
+  the i reflects the order of writes to each key during each epoch.
+    so reads can see most recent.
+
+Now for r/o transactions.
+  client T2 gets epoch 13 from epoch server when r/o transaction starts
+  goal: see snapshot of data as of start of 13.
+  i.e. we want to see results of all r/w transactions that
+    were in epochs < 13, but none from epochs >= 13.
+  [ 12 | 13 | 14 ]
+
+Snapshot read of key k is easy if no r/w transaction is active for k:
+  when k's shard leader receives a request to read k at start of 13,
+  return k's record <12,i> with highest i.
+
+What if an r/w transaction T1 got 12 (or earlier) from the epoch server,
+  but hasn't finished committing -- hasn't written the DB?
+  An r/o transaction T2 that sees epoch 13 needs to see T1's writes!
+  Good news: any such T1 must still be holding locks.
+    So it's enough for T2 to wait for all outstanding locks to be released.
+
+So the procedure for an r/o transaction:
+  ask epoch server for the epoch e
+  for each read
+    ask shard leader to read as of end of e-1
+    shard leader first waits for lock on that key, if any
+    then replies
+  Result: r/o sees results of all r/w transactions < e, none >= e
+
+Are r/o transactions linearizable? Do they see fresh data?
+  No, they see a snapshot of data as of start of current epoch.
+  If r/w T1 finishes in epoch 13, and *then* r/o T2 starts in epoch 13,
+    T2 won't see any of T1's writes.
+  So r/o transactions see consistent data, but maybe a bit stale.
+
+Paper notes r/o can get fresh data by delaying until next epoch.
+  So r/o T3 that starts in 13 delays until 14, then reads as of start of 14.
+  (still need to wait for lock releases)
+  So T3 will see writes of all transactions that started before it in 13.
+  This is the analogue of Spanner's commit wait, but for r/o rather than r/w.
+  (This was The Question)
+
+Spanner and Chardonnay make opposite r/w vs r/o optimization decisions.
+
+How do Chardonnay's r/o transactions fit into the dry run idea?
+  Remember the original goal is to speed up r/w transactions.
+    And authors concerned about r/w transactions holding locks while reading disk.
+  Dry run pre-fetches and caches read data.
+    Using an r/o transaction (and ignore writes).
+  Dry run transaction sees consistent snapshot so won't crash.
+    OK if a little stale, since the key point is to not violate application's invariants.
+  Then real r/w execution is fast (no disk reads) 
+  So r/w holds locks for short time.
+  So locks don't slow down other transactions.
+
+For what kinds of transactions does the dry-run idea make the most sense?
+  What kinds of transactions would have caused lock contention w/o dry run?
+    Read "hot" data (and lock).
+    Then read some "cold" data (and wait for disk reads).
+    Write the hot data.
+    Commit (and release hot lock).
+    (and meanwhile other transactions are waiting for "hot" lock)
+  Do we think this comes up a lot?
+
+What about deadlocks?
+  Dry run doesn't lock, so it can't deadlock.
+  Dry run reveals which records will be needed, and thus which locks.
+  Before real execution of transaction, client sorts locks, and acquires.
+  If dry and real executions match, no deadlock!
+    Since all r/w transactions dry-run and sort in the same way.
+  Very nice that Chardonnay gets this for free, given dry run.
+
+Does the epoch length matter?
+  Could it be e.g. 10 us rather than 10 ms?
+  Shorter epoch -> data read by r/o is less stale.
+  Shorter epoch -> linearizable r/o must wait less time until epoch changes.
+  BUT shorter -> Epoch Service must run Paxos more often -> might get overloaded.
+    Epoch Service probably easy to overload since EVERY TRANSACTION talks to it.
+
+What's the relationship between epochs and Spanner's TrueTime?
+  They are both effectively time sources.
+  All transactions use them to time-stamp writes, and for snapshot reads.
+  TrueTime is more scalable, in # clients and geographically,
+    b/c GPS is a radio broadcast which many can hear without overloading GPS.
+    But Epoch Service is a single server (or replica cluster).
+  Both have some uncertainty.
+    TT interval similar to the 10ms epoch period.
+  Both require transactions to delay to cover uncertainty.
+    Commit wait, and (for linearizable r/o) wait for one epoch.
+  Both could probabably reduce uncertainty with more expensive engineering.
+
+What does Chardonnay's design sacrifice?
+  Slows down r/o snapshots, in order to make r/w faster.
+  Dry run hurts transactions that aren't contended, don't have hot record.
+  Single datacenter (since single epoch service, and must talk to shard leaders).
+  Epoch service smells like a bottlneck.
+
+Evaluation
+  What are the paper's claims?
+    Dry run makes 2pc faster for some workloads, by reducing lock contention.
+  What would we like them to demonstrate?
+    Do their techniques help for real-world workloads?
+    Is Chardonnay faster than competing systems?
+
+Figure 4(b) shows the main result
+  each transaction:
+    8 cold records, two hot records on different shards
+    random order, random keys
+    reads and then writes all 10 records
+    every transaction is r/w (thus dry run, then real)
+  x axis: contention index, 1 means everyone hitting the same hot record
+  y axis: transactions per second
+  the three bars:
+    Chardonnay:
+    Prefetch only: dry run to pre-fetch, but not ordered lock acquisition
+    Baseline: Chardonnay w/o dry run
+
+For low contention, why are they all about the same?
+  Baseline wins b/c doesn't do dry-run
+  Chardonnay beats prefetch-only due to pipelined ordered acquisition
+
+For contention=0.1, why is Baseline slower?
+  paper says hot locks held while reading cold data from disk
+  deadlock must also be a problem: Figure 5 says 30% abort rate!
+    they all have to be re-run, wasting effort
+
+For contention=1.0, why does Baseline get almost zero throughput?
+  even more contention, and abort rate 50%
+  Prefetching-only suggests about half of win is reduced contention,
+    which prefetching-only gets you, and half is deadlock avoidance
+
+Are the absolute numbers impressive?
+  7x more throughput than Spanner paper's Table 3 (2200 one-key r/w / second).
+  But experiments are not comparable:
+    Chardonnay transactions do much more -- 10 keys.
+    Chardonnay hardware 10 years more modern.
+    Neither paper gives much detail about the setup.
+
+What we *don't* see in the evaluation:
+  Real-world workloads (Section 9.1 carefully tailored for Chardonnay)
+  Comparison with other databases
+  Details of hardware/software/network/disk setup
+
+Wrap-up
+  distributed transactions are an enduring area of work
+  next week, another take: optimistic concurrency control

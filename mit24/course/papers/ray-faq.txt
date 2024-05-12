@@ -1,0 +1,96 @@
+FAQ for Ray
+
+Q: Is Ray used in practice?
+
+A: Ray is an open-source project (https://github.com/ray-project/ray)
+with many users, including OpenAI.  Anyscale offers a commericial
+offering of Ray as a service.
+
+Q: What application benefit from Ray?
+
+A: Ray is in the line of systems such as MapReduce, Spark, etc., but
+can handle a wider class of applications by supporting both functional
+and stateful computations and providing low-latency for invoking
+computations.
+
+Q: What is the scheduling policy that Ray uses:
+
+A: The default policy is try to run a task locally. It the local
+scheduler doesn't have enough capacity for the request, asks a random
+other scheduler if it can run the task (based on the requested
+resources for the task).  The details are here:
+https://docs.ray.io/en/latest/ray-core/scheduling/index.html
+
+Q: What's the difference between actors and tasks?
+
+A: Actors is a kind of task: a stateful one that can be invoked
+multiple times and keeps its state between invocations.
+
+Q: What is the actor model?
+
+A: A model of computation where a computation can maintain local state
+invocations. For more specifics, see
+https://en.wikipedia.org/wiki/Actor_model
+
+Q: Why even bother supporting actors?
+
+A: Developers may want to have long-running tasks that can maintain
+state between invocations. For example, because the Router in 3(a) is
+an actor, it can perform batching. Each model actor in 3(a) keeps
+weights between invocation to keep them warm in the local GPU memory.
+
+Q: What are the tradeoffs between recovering value through lineage
+tree e-execution compared to recovering values through persistence
+log?
+
+A: Lineage recovery requires that the computations are
+idempotent. Lineage recovery may take a long time and expensive since
+the system may have to re-run many computations, which may produce
+large amounts of data.  This is the reason that Ray tries to speed up
+this recovery up by re-using secondary copies. If the second copy,
+exists it doesn't have to re-run the computation to generate it.
+
+Q: How would the system handle non-idempotent tasks, or what would be
+the strategy to deal with side effects?
+
+A: Ray by itself doesn't handle non-idempotent tasks. You would need,
+for example, a transaction-like implementation plan with write-ahead
+logs.  This out of scope of the Ray system itself, but actors could
+implement a plan like that on their own.
+
+Q: What is lineage recomputing?
+
+A: Lineage reconstruction recomputing results by tracing back the call
+graph to a task that hasn't crashed and then re-executing its tasks,
+reproducing the tasks that crashed.
+
+Q: What is fate sharing?
+
+A: Fate sharing refers the general idea of forcing a tasks to share
+fate with the tasks that failed; that is, fail it too.  In Ray this is
+important because task blocked on a dangling future may block forever
+because the future will never complete because the task that might
+have completed it has crashed.
+
+Q: Why is the system called Ray?
+
+A: There is no real reason behind the name. According to the authors,
+it was one of several choices and it sounded nice.
+
+Q: Is the idea of "ownership" here inspired by ownership in other
+contexts, e.g. programming langugae design (such as Rust)?
+
+A: The idea of ownership is a common idea in systems.  I don't think
+there is much overlap between Ray and Rust in terms of their specific
+use of ownership.  For example, a borrower can modify an object in
+Ray, which is disallowed in Rust.
+
+Q: If Ray were implemented in Go could one use a distributed garbage
+collector instead of reference counting?
+
+A: One could implement a distributed garbage collector that leverages
+Go's local garbage collector but that is particular challenging in
+distributed systems, because of failures and because of potentially
+long pause times (because the GC has to contact a remote node).  Here
+is a survey article on distributed garbage collectors:
+http://portal.acm.org/citation.cfm?doid=292469.292471

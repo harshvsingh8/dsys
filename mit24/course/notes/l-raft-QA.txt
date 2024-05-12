@@ -1,0 +1,83 @@
+6.5840 Lecture 10: lab 3 A+B Q&A
+
+Two different structures of Raft library
+  multi-threaded with locks
+  single-threaded state-machine 
+  neither one is strictly better than the other
+  other plans are possible
+
+Multi-threaded Raft library
+  many threads (Start() thread, thread reading from applych)
+  many RPC threads to talk to peers in parallel
+  many RPC handler threads (started by RPC package)
+  raft state with lock
+  one thread writing to applych
+    use condvar to signal it
+
+Locking
+  Raft lock serializes operations
+  RPC handlers hold Raft lock so are atomic
+    little parallelism
+  Threads don't hold lock during RPC
+    risk: deadlock
+
+Example code fragment: sendRPCs and applier
+
+Single-threaded state-machine
+  observation: little parallelism anyway
+    main use: sending RPCs in parallel
+  one thread runs Raft protocol
+    receives input events (e.g., tick, RPC request, reply)
+    process event, updating raft structure, without locks
+      collecting output events (persist, send RPCs)
+    performs output events
+      first persist, then RPC requests
+  one thread for the applier
+    need to separate state between applier and state-machine
+    protect shared state with lock (e.g., the log)
+
+Example code fragment: sm.go and sendRPCs
+
+Debugging
+  Log all action/messages in easy searchable way
+   standard format: src, dst, opcode, raft state,..
+  Run test case
+    if ok:
+      next test case
+    if fail:
+      repeat:
+        study test case
+        formulate hypothesis about what might be wrong
+        study log and figure 2, run with race detector
+        modify code and try test again
+
+Getting started on a lab
+  make first test case work
+   fill out VoteRequest structs
+   do an RPC
+  then much easier to get the lay of the land
+  other strategy: read all guides, read test code, etc.
+
+Picking timer values
+  at least a few heartbeat intervals (in case network drops a heartbeat)
+    to avoid needless elections, which waste time
+  random part long enough to let one candidate succeed before next starts
+  short enough to react quickly to failure, avoid long pauses
+  short enough to allow a few re-tries before tester gets upset
+     tester requires election to complete in 5 seconds or less
+  see also 5.6 and 9.3 of the raft paper
+  
+Code tour
+  Raft struct
+  Ticker
+  Election timeout
+  Start election
+  VoteRequest handling
+  becomeLeader
+  send appends
+  AppendEntries request handling
+  AppendEntries reply handling
+  commit
+  applier
+  Start()
+  

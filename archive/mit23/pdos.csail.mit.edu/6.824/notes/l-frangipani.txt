@@ -1,0 +1,340 @@
+6.5840 2023 Lecture 13: Frangipani
+
+Frangipani: A Scalable Distributed File System
+Thekkath, Mann, Lee
+SOSP 1997
+
+why are we reading this paper?
+  cache coherence
+  distributed transactions
+  distributed crash recovery
+  and the interaction among the three
+
+what's the context?
+  the authors' research lab
+    programming, text processing, e-mail, &c
+    lots of collaboration
+  UNIX workstations in offices
+  most file access is to user's own files
+  need to potentially use any file on any workstation
+    user/user collaboration
+    one user logging into multiple workstations
+  solution: a network file system
+    looks to users/apps just like an ordinary local-disk filesystem
+    but workstations talk to server to get at files
+  this was a common scenario when the paper was written
+
+the state of the art in 1997: AFS and NFS
+  [workstations; one AFS server]
+  MIT Athena uses AFS: /afs/.../rtm
+  RPC interface is system calls: create(), mkdir(), readdir(), read(), &c
+  one central server, executes all filesystem logic
+  problem: central server gets overloaded, hard to scale up
+
+Frangipani overall design?
+  [users; workstations + Frangipani; network; petal servers; lock server]
+  Petal: block storage service; replicated; striped+sharded for performance
+    Petal knows nothing about file systems
+  the workstations run the filesystem code: Frangipani
+  What does Frangipani store in Petal?
+    like an ordinary hard disk file system
+    i-nodes, file content blocks, directory content blocks, free bitmaps
+    file content vs "meta-data"
+
+what properties were wanted?
+  strong consistency
+  write-back caching in each workstation
+    operate entirely from workstation cache if no sharing
+      including creating files, creating directories, rename, &c
+  scalability
+    Petal already can be scaled up in storage and CPU power
+    they wanted the file system processing also to scale
+
+challenges
+  cache coherence
+    WS1 creates file "x" in local cache; WS2 should see it if it looks!
+    i.e. they wanted linearizability despite write-back cache
+  isolation
+    for both write/write and write/read
+    uses locks -- but distributed
+  crash recovery
+    WS1 crashes while creating in directory "d", but doesn't reboot
+    WS1 was holding a lock on "d", so "d" may not be safe to look at!
+  (like ACID transactions, but implementation is unusual)
+
+first challenge: cache coherence
+  it's what provides linearizability despite caching
+    so reads see writes
+  many systems use "cache coherence protocols"
+    multi-core, file servers, distributed shared memory
+
+Frangipani's coherence protocol (simplified):
+  lock server (LS), with one lock per file/directory
+    file  owner
+    -----------
+    x     WS1
+    y     WS1
+  workstation (WS) Frangipani cache:
+    file/dir  lock  content
+    -----------------------
+    x         busy  ...
+    y         idle  ...
+  if WS holds lock,
+    busy: using data right now
+    idle: holds lock but not using the cached data right now
+  workstation rules:
+    don't cache unless you hold the lock
+    acquire lock, then read from Petal
+    write to Petal, then release lock
+  coherence protocol messages:
+    request  (WS -> LS)
+    grant (LS -> WS)
+    revoke (LS -> WS)
+    release (WS -> LS)
+
+the locks are named by files/directories (really i-numbers),
+though the lock server doesn't actually understand anything
+about file systems or Petal.
+
+example: WS1 changes file z, then WS2 reads z
+
+WS1                      LS            WS2
+read z
+  --request(z)-->
+                         owner(z)=WS1
+  <--grant(z)---
+(read+cache z data from Petal)
+(modify z locally)
+(when done, z's lock is cached in "idle" state)
+                                       read z
+                          <--request(z)--
+   <--revoke(z)--
+(write modified z to Petal)
+   --release(z)-->
+                         owner(z)=WS2
+                           --grant(z)-->
+                                       (read z from Petal)
+
+the point:
+  locks and rules force reads to see last write
+  locks ensure that "last write" is well-defined
+
+coherence optimizations
+  the "idle" state allows lock caching if no conflicts
+  Frangipani has shared read locks, as well as exclusive write locks
+
+Frangipani's cache coherence is unusually sophisticated for a network FS
+  but design is very close to previous multi-processor coherence schemes
+
+next challenge: isolation
+  what if two workstations try to create the same file at the same time?
+  what if WS1 looks at a file/directory while WS2 is modifying it?
+    e.g. file create initializes i-node, adds directory entry
+    e.g. rename (both names visible? neither?)
+
+Frangipani provides isolated file-system operations:
+  operation corresponds to a system call (create file, remove file, rename, &c)
+  WS acquires locks on all file system data that it will modify
+  performs operation with all locks held
+  only releases when finished
+    only responds to a "revoke" after entire operation is complete
+  the locks prevent any other WS from seeing partially-complete operations
+    and prevent another WS from performing a conflicting update
+
+there's not much surprising to this isolation design
+  mostly that the lock server is factored out and shared
+
+last challenge: crash recovery
+
+What if a Frangipani workstation dies while holding locks?
+  other workstations will want to continue operating...
+  can we just revoke dead WS's locks?
+  what if dead WS had modified data in its cache?
+  what if dead WS had started to write back modified data to Petal?
+    e.g. WS wrote new directory entry to Petal, but not initialized i-node
+    this is the troubling case
+
+Is it OK to just wait until a crashed workstation reboots?
+
+Frangipani uses write-ahead logging for crash recovery
+  Before writing any of op's cached blocks to Petal,
+    writes log entry to Petal containing description of entire op
+  So if a crashed workstation has done some Petal writes for an operation,
+    but not all, the writes can be completed from the log in Petal
+  Very traditional -- but...
+  1) Frangipani has a separate log for each workstation
+     this avoids a logging bottleneck, eases decentralization
+     but may scatter updates to a given file over many logs
+  2) Frangipani's logs are in shared Petal storage, not local disk
+     WS2 can read WS1's log to recover from WS1 crashing
+  Separate logs is an interesting and unusual arrangement
+
+Frangipani's logging scheme involves four kinds of storage:
+  * FS blocks in Petal (non-volatile)
+  * WS's circular log in Petal (non-volatile)
+  * cache of FS blocks in WS RAM (volatile)
+  * tail of WS's log in WS RAM (volatile)
+
+What's in each workstation's log?
+  log sequence number (LSN) per 512-byte log block
+  log entry:
+    (this is a guess, paper isn't explicit)
+    array of updates:
+      block #, new version #, offset, new bytes
+    just contains meta-data updates, not file content updates
+  example -- create file d/f produces a log entry:
+    a three-entry update array:
+      add an "f" entry to d's content block, with new i-number
+      initialize the i-node for f
+      set the bit for i-node in the allocation bitmap
+  initially the log entry is in WS local memory (not yet Petal)
+
+When WS gets lock revocation on modified directory from LS:
+  1) write all as-yet-unwritten in-memory log entries to Petal, then
+  2) send the cached updated FS blocks to Petal, then
+  3) release the locks to the LS
+
+Why must WS write log to Petal before updating
+  i-node and directory &c in Petal?
+
+Why delay writing the log until LS revokes locks?
+
+What happens when WS1 crashes while holding locks?
+  Not much, until WS2 requests a lock that WS1 holds
+    LS sends revoke to WS1, gets no response
+    LS times out, tells WS2 to recover WS1 from its log in Petal
+  What does WS2 do to recover from WS1's log?
+    Read WS1's log from Petal
+    Perform Petal writes described by logged operations
+    Tell LS it is done, so LS can release WS1's locks
+
+Note it's crucal that each WS log is in Petal so that it can
+  be read by any WS for recovery.
+
+What if WS1 crashes before it writes its recent log to Petal?
+  WS1's recent operations may be totally lost if WS1 crashes.
+  But the file system in Petal will be internally consistent.
+
+Why is it safe to replay just one log, despite interleaved
+  operations on same files by other workstations?
+Example:
+  WS1: delete(d/f)               crash
+  WS2:               create(d/f)
+  WS3:                                  recover WS1
+  WS3 is recovering WS1's log -- but it doesn't look at WS2's log
+  Will recovery re-play the delete? 
+    This is The Question
+    No -- prevented by "version number" mechanism
+    Version number in each meta-data block (i-node) in Petal
+    Version number(s) in each logged op is block's version plus one
+    Recovery replays only if op's version > block version
+      i.e. only if the block hasn't yet been updated by this op
+  Does WS3 need to aquire the d or d/f lock?
+    No: if version number same as before operation, WS1 didn't
+        do the write, so it couldn't have released the lock,
+        so no-one else could have the lock, so
+        it's safe for WS3 safe to update in Petal
+
+The log holds meta-data but not file content.
+  Workstations do write file content to Petal before releasing lock.
+    This might be after the WS writes its log to Petal.
+    If WS crashes, file may be missing some or all content.
+  Why does this make sense? Why not log content too?
+    1. Logging content would be much slower, since content
+       would then be written twice to Petal.
+    2. For many files it wouldn't matter, e.g. object files generated by cc.
+    3. It wouldn't help applications that need to be correct,
+       e.g. DB or e-mail system, since they usually have notions
+       of transaction that are different from single FS ops.
+    4. Existing filesystem had (and have) similar behavior,
+       so careful applications were already written to
+       e.g. use fsync().
+
+What if:
+  WS1 holds a lock
+  Network partition
+  Lock server decides WS1 is dead, recovers, releases WS1's locks
+  If WS1 is actually alive, could it then try to write data covered by the lock?
+  Locks have leases!
+    Lock owner can't use a lock past its lease period
+    LS doesn't start recovery until after lease expires
+
+Is Paxos or Raft hidden somewhere here?
+  Yes -- Paxos-based configuration managers for lock servers, Petal servers
+  ensures a single lock server, despite partition
+  ensures a single primary for each Petal shard
+
+Performance?
+  what might we want to know?
+  * basic single-user performance
+    - small operations per second (e.g. file create)
+    - throughput for big reads/writes
+  * scaling with more users
+    - again, both small and big operations
+  * what limits the performance?
+
+Tables 1 and 2 show single-user small-op performance
+  against AdvFS, a conventional local-disk file system
+  some differences, but similar
+  hard to guess what the limiting factors are
+    disk seek? network round-trip? CPU time?
+
+Table 3 shows single-user large-file throughput
+  around 10 MB/second
+  why?
+  seems low given Petal's 63 disks, each good for 6 MB/second
+
+Figure 5 shows small-file scalability
+  X axis is number of active workstations
+    each workstation runs a file-intensive benchmark
+    workstations use different files and directories
+  Y axis is completion time for a single workstation
+  flat implies good scaling == no significant shared bottleneck
+  why?
+    maybe each workstation is mostly operating out of its own cache
+    maybe Petal's many disks yield parallel performance
+
+Figure 6 shows large-file read scalability
+  why 10 MB/second for one client? (it's a familiar number...)
+  why does the line go up with more workstations?
+  where might the line stop?
+
+Figure 7 shows large-file write scalability
+  why does the line stop?
+  why at 40 MB/s?
+
+Petal details
+  Petal provides Frangipani w/ fault-tolerant high-performance storage
+    so it's worth discussing
+  block read/write interface
+    compatible with existing file systems
+  looks like single huge disk, but many servers and many many disks
+    big, high performance
+    striped, 64-KB blocks
+  virtual: 64-bit sparse address space, allocate on write
+    address translation map
+  primary/backup (one backup server)
+    primary sends each write to the backup
+  uses Paxos to agree on primary for each virt addr range
+  what about recovery after crash?
+    suppose pair is S1+S2
+    S1 fails, S2 is now sole server
+    S1 restarts, but has missed lots of updates
+    S2 remembers a list of every block it wrote!
+    so S1 only has to read those blocks, not entire disk
+  logging
+    virt->phys map and missed-write info
+
+Limitations
+  Most useful for e.g. programmer workstations, not so much otherwise
+    A file system is not a great API for many applications, e.g. web site
+  Frangipani enforces permissions, so workstations must be trusted
+    so Athena couldn't run Frangipani on Athena workstations
+  Frangipani/Petal split is a little awkward
+    both layers log
+    Petal may accept updates from "down" Frangipani workstations
+    more RPC messages than a simple file server
+
+Ideas to remember
+  cache coherence
+  distributed crash recovery

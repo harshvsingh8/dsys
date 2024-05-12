@@ -1,0 +1,152 @@
+6.824 Spanner FAQ
+
+Q: What is an atomic clock?
+
+A: A very stable oscillator. There are two main technologies that go
+by the name "atomic clock": rubidium clocks and cesium clocks. Both
+exploit changes in the state of the outer electron, which involve
+specific quanta of energy and thus wavelength. One can tune a signal
+generator to precisely that wavelength by watching how excited the
+electrons are. An atomic clock is just the oscillator part of a clock:
+it produces a frequency that can cause a clock to tick at exactly the
+right rate, but does not by itself know what time it is. To provide
+time, an atomic clock must initially be synchronized with the time,
+typically via GPS (which itself is fed the time by a bunch of atomic
+clocks).
+
+Q: What kind of atomic clock does Spanner use?
+
+A: Sadly the paper doesn't say. Rubidium clocks are typically a few
+thousand dollars (e.g. https://thinksrs.com/products/fs725.html).
+Rubidium clocks drift by perhaps a few microseconds per week, so they
+need to be re-synchronized to UTC (typically by GPS) every once in a
+while. Cesium clocks cost perhaps $50,000; the HP 5071A is a good
+example. A cesium clock doesn't drift. Of course, any one clock might
+fail or suffer a power failure, so even with perfect cesium clocks you
+still need more than one and the ability to synchronize to UTC.
+A picture on this page includes a 5071A:
+https://sookocheff.com/post/time/truetime/
+
+Q: How does TrueTime select intervals in a way that's guaranteed to
+contain the correct time?
+
+A: Here a simple example of the kind of reasoning it uses.
+
+Suppose master time server S1 has the correct time (from GPS or an
+atomic clock). S2 sends a request to S1 asking the time, and gets a
+response. The response says "10:00:00 AM" and it arrives two seconds
+after S2 sent the request (it's reasonable to assume that S2 can time
+how long things take even though it doesn't know the absolute time).
+Since the whole request/response took two seconds, S2 can conclude
+that the network might have delayed the request by up to two seconds;
+or delayed the response by up to two seconds; but no more than that.
+So S2 can conclude that, at the moment it receives the response, that
+the correct time must be between 10:00:00 and 10:00:02.
+
+Q: How does external consistency relate to linearizability and
+serializability?
+
+A: Spanner's external consistency is the same as strict
+serializability. And strict serializability is linearizability, but
+applied to multi-read/write transactions rather than single reads and
+writes.
+
+Q: Why is external consistency desirable?
+
+A: Suppose Hatshepsut changes the password on an account shared by her
+workgroup, via a web server in a datacenter in San Jose. She whispers
+the new password over the cubicle wall to her colleage Cassandra.
+Cassandra logs into the account via a web server in a different
+datacenter, in San Mateo. External consistency guarantees that
+Cassandra will observe the change to the password, and not, for
+example, see a stale replica.
+
+Q: Could Spanner use Raft rather than Paxos?
+
+A: Yes. At the level of this paper there is no difference. At the time
+Spanner was being built, Raft didn't exist, and Google already had a
+tuned and reliable Paxos implementation. Have a look at the paper
+Paxos Made Live by Chandra et al.
+
+Q: What is the purpose of Spanner's commit wait?
+
+A: Commit wait ensures that a read/write transaction does not complete
+(release locks and reply to the client) until the time in its
+timestamp is guaranteed to have passed. That means that a read/only
+transaction that starts after the read/write transaction completes is
+guaranteed to have a higher timestamp, and thus to see the read/write
+transaction's writes. This helps fulfil the guarantee of external
+consistency: if T1 completes before T2 starts, T2 will come after T1
+in the equivalent serial order (i.e. T2 will see T1's writes).
+
+Q: Why does a read/only transaction use TT.now().latest as
+its timestamp?
+
+A: A read/only transaction T2 is required to see the results of any
+read/write transaction T1 that completed before T2 started. We know
+from commit-wait that the time TS1 in T1's timestamp has passed. This
+means that TS1 is less than T2's TT.now().latest. So reading at
+timestamp TT.now().latest is guaranteed to see T1's writes.
+
+Q: Why does a read/write transaction use TT.now().latest as its
+timestamp?
+
+A: If there are two read/write transactions T1 and T2, and T1 ends
+before T2 starts, TS2 needs to be greater than TS1 so that any r/o
+transactions that see T2's writes will also see T1's writes. Just as
+with r/o transactions, T2 chooses TS2 = TT.now().latest in order to
+guarantee that TS2 is larger than TS1.
+
+Q: What are the steps in commiting a read-write transaction?
+
+A:
+1. Once the client has finished all its reads and writes, and is ready
+   to ask Spanner to try to commit, the client chooses a two-phase
+   commit coordinator.
+2. The client sends each of its writes to the leader of the
+   relevant shard, along with the identity of the chosen coordinator.
+3. Each shard leader acquires write lock(s) (perhaps waiting), chooses
+   a "prepare timestamp", logs this information in Paxos, and sends a
+   "prepared" message to the coordinator containing the prepare
+   timestamp. The shard leader chooses the prepare timestamp to be
+   larger than the timestamp of any transaction it knows about.
+4. The coordinator waits for all the prepared messages. It chooses a
+   timestamp TS for the transaction that's >= TT.now().latest and
+   greater than any participant's prepared timestamp. The coordinator
+   waits until TS is guaranteed to have passed (the commit-wait). Then
+   the coordinator sends a reply to the client, and sends each
+   participant a message with TS telling the participant to commit.
+5. Each participant performs the writes for its shard, and then
+   releases locks.
+
+Q: What's the point of the "prepare timestamp"?
+
+A: Each shard leader must apply writes in timestamp order, so that the
+"safe time" mechanism in 4.1.3 can guarantee that if a replica has
+seen a write with timestamp X, it has also seen every write with
+timestamp less than X. So a particpant needs to be able to tell the
+two-phase-commit coordinator "please don't assign this transaction a
+timestamp less than X", where X is the highest timestamp the
+participant has already seen.
+
+Q: In what ways is Spanner better than GFS?
+
+A: GFS provides just huge files. GFS has few consistency guarantees.
+For example, if I write to a file, and then you read it, GFS does not
+guarantee that you will see my write. GFS has no notion of
+transactions.
+
+Spanner provides most of the nice features and properties of an ACID
+database. Spanner has tables with rows and columns, and relations
+queries over those tables (as in SQL). Spanner has atomic distributed
+transactions, and guarantees very strong consistency (linearizability
+and strict serializability).
+
+Q: Does anyone use Spanner?
+
+A: It's said that hundreds of Google services depend on Spanner. The
+paper talks about its use by Google's advertising system. Google's
+Zanzibar Authorization system uses Spanner. It's offered as a service
+to Google's cloud customers in the form of Cloud Spanner. The
+CockroachDB open-source database is based on the Spanner design.
+

@@ -1,0 +1,81 @@
+FAQ for Chardonnay
+
+Q: What is Wound-Wait?
+
+A: Wound-Wait is a technique for avoiding deadlock. If transaction T
+holds a lock, and transaction U needs that lock, then one of two
+things happens. If T started before U, then U waits until T releases
+the lock. If U started before T, then the system aborts T and gives U
+the lock. Put another way, the system orders transactions by start
+time, and ensures that older transactions never have to wait for
+younger transactions.
+
+Wound-Wait can abort a transaction unnecessarily, because it doesn't
+actually detect deadlocks. In particular, if the lock holder is
+younger and was about to release the lock, Wound-Wait may kill that
+younger transaction even though if it had just waited a little, the
+potential for deadlock would have gone away.
+
+Q: What is eRPC?
+
+A: eRPC is a fast research RPC system. eRPC can perform a complete RPC
+in few microseconds, in contrast to a few hundred microseconds with
+conventional RPC software. Much of its speed comes from completely
+bypassing the kernel: eRPC uses a user-level NIC driver, and tells the
+NIC to DMA directly to/from user memory. eRPC polls DMA queues rather
+than taking interrupts. eRPC uses commercially available high-end
+network hardware, but requires an unusual software setup.
+
+You can read more about eRPC here:
+
+  https://www.usenix.org/system/files/nsdi19-kalia.pdf
+
+Q: What are SSD and NVMe?
+
+A: SSD means Solid State Drive: a replacement for mechanical spinning
+hard drives, using flash memory. Often SSDs are attached to the host
+computer using the same interface and cabling system (SATA) as
+mechanical hard drives, for compatibility. SSDs are much faster than
+hard drives: an SSD read or write takes 100 or 200 microseconds rather
+than 5 or 10 milliseconds.
+
+NVMe refers to a technique for attaching storage to a computer via the
+PCI Express bus, which is faster than SATA. If you pay a lot of money
+for a flash device attached via NVMe you might be able to get read
+times as low as 10 microseconds.
+
+Q: What is an Azure L8s v2 VM?
+
+A: https://learn.microsoft.com/en-us/azure/virtual-machines/lsv2-series
+
+Q: Why do transactions need to check leaders' lease ranges?
+
+A: Here's my guess. A read-only transaction in epoch e needs to wait
+until all locks from epoch e-1 have been released. So it needs to talk
+to leaders who have valid lock tables for epoch e-1. If leadership has
+changed since epoch e-1, the new leader won't know about locks from
+not-yet-preparing transactions from e-1 (since the lock table is in
+RAM, and not replicated with Paxos).
+
+Q: What is YCSB-A (Section 4)?
+
+A: YCSB is a set of benchmarks for key/value databases (Yahoo Cloud
+Serving Benchmark). The "A" variant is 50% reads, 50% writes.
+https://courses.cs.duke.edu/fall13/cps296.4/838-CloudPapers/ycsb.pdf
+
+Q: Why does a read/write transaction have to hold read locks until
+after commit (Section 5.4)?
+
+A: One of the paper's authors kindly explained with an example of what
+can go wrong if transactions released read locks earlier:
+
+(1) Transaction T1 reads key K1
+(2a) T1 calls prepare, releases lock on K1
+(2b) In parallel, T1 calls read-epoch, which for some reason stalls
+(3) Transaction T2 writes key K1
+(4) Transaction T2 runs 2PC and read-epoch, getting assigned epoch e, and commits successfully
+-- Since T1 didn't observe T2's write, it must be ordered before it in any valid ordering
+(5) the epoch is incremented to e+1
+(6) 2b completes, but with T1 getting assigned epoch e+1.
+-- This breaks the epoch ordering property
+
