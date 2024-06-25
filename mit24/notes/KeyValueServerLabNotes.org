@@ -1,0 +1,87 @@
+
+
+** Task 1 - Simple Non Message Dropping Client-Server Linearizable KV-Server
+
+#+BEGIN_SRC 
+
+Your first task is to implement a solution that works when there are no 
+ dropped messages.
+
+You'll need to add RPC-sending code to the Clerk Put/Append/Get methods in client.go,
+ and implement Put, Append() and Get() RPC handlers in server.go.
+
+You have completed this task when you pass the first two tests in the 
+ test suite: "one client" and "many clients".
+
+#+END_SRC
+
+*Implementation Notes*
+ - The operations once reach the server must be serialized and then executed.
+ - The operation should be responded back by the server before the next operation is picked.
+ - The strict sequencing can be done either using a queue or a lock - serializing the operations.
+
+The following is the test run log with only first two test cases passing.
+
+#+BEGIN_SRC 
+harshvs@hvsurface:~/github/dsys/mit24/lab/src/kvsrv$ go test
+Test: one client ...
+  ... Passed -- t  3.5 nrpc 22123 ops 22123
+Test: many clients ...
+  ... Passed -- t  4.7 nrpc 93974 ops 93974
+Test: unreliable net, many clients ...
+panic: Failed to get reply for KVServer.Put
+
+goroutine 232218 [running]:
+...
+...
+exit status 2
+FAIL    6.5840/kvsrv    9.310s
+#+END_SRC
+
+ ** Task 2 - Make the client-server interaction robust in presence of network failures
+
+#+BEGIN_SRC 
+
+Add code to Clerk to retry if doesn't receive a reply, and 
+to server.go to filter duplicates if the operation requires it. 
+
+#+END_SRC
+
+*Implementation Notes*
+ - Need a way to detect duplicate (or rather last repeated) update calls from the clients.
+ - The client needs some way to identify itself - would need some sort of client-id.
+ - Each update message from the client should also carry some identification.
+ - To simplify the interaction and state management we can assume a client makes update calls in sequence.
+ - With that simplification, the sever just need to maintain on previous id or sequence no per client.
+ - If a request lands to the server from a client which it had already responded then it would simply return the previously returned value. 
+ - Else, it would accept the new update request, and modifies it's client state (seq no, returned-value) after updating the main store.
+
+
+The following the final run with all test case passing
+
+#+BEGIN_SRC 
+harshvs@hvsurface:~/github/dsys/mit24/lab/src/kvsrv$ go test
+Test: one client ...
+  ... Passed -- t  3.5 nrpc 22793 ops 22793
+Test: many clients ...
+  ... Passed -- t  5.0 nrpc 101169 ops 101169
+Test: unreliable net, many clients ...
+  ... Passed -- t  3.3 nrpc  1090 ops  865
+Test: concurrent append to same key, unreliable ...
+  ... Passed -- t  0.3 nrpc    69 ops   52
+Test: memory use get ...
+  ... Passed -- t  0.7 nrpc     8 ops    0
+Test: memory use put ...
+  ... Passed -- t  0.2 nrpc     2 ops    0
+Test: memory use append ...
+  ... Passed -- t  0.4 nrpc     2 ops    0
+Test: memory use many put clients ...
+  ... Passed -- t 18.2 nrpc 100000 ops    0
+Test: memory use many get client ...
+  ... Passed -- t 16.1 nrpc 100001 ops    0
+Test: memory use many appends ...
+2024/06/25 19:39:22 m0 351456 m1 2360464
+  ... Passed -- t  2.4 nrpc  1000 ops    0
+PASS
+ok      6.5840/kvsrv    51.370s
+#+END_SRC
