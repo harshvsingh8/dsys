@@ -38,7 +38,7 @@ exit status 2
 FAIL    6.5840/kvsrv    9.310s
 #+END_SRC
 
- ** Task 2 - Make the client-server interaction robust in presence of network failures
+** Task 2 - Make the client-server interaction robust in presence of network failures
 
 #+BEGIN_SRC 
 
