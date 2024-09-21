@@ -19,15 +19,29 @@ package raft
 
 import (
 	//	"bytes"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
+// Define an enum for Peer Role
+type PeerRole int
+
+const (
+	Follower PeerRole = iota
+	Candidate
+	Leader
+)
+
+func (d PeerRole) String() string {
+	return [...]string{"Follower", "Candidate", "Leader"}[d]
+}
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -61,16 +75,21 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	role        PeerRole // current role of this server peer.
+	currentTerm int      // current term number
+	votedFor    int      // voted for the current term (-1 if not)
+	heartBeats  int32    // to track if it received any heart-beat pulse during the last election timeout.
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isleader bool
+
 	// Your code here (3A).
+	term = rf.currentTerm
+	isleader = rf.role == Leader
 	return term, isleader
 }
 
@@ -82,37 +101,37 @@ func (rf *Raft) GetState() (int, bool) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
-
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		rf.currentTerm = 0
+		rf.role = Follower
+		rf.votedFor = -1
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
 
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var term int
+	var votedFor int
+	if d.Decode(&term) != nil ||
+		d.Decode(&votedFor) != nil {
+		DPrintf("Failed to read persisted properties, falling back to the default state.")
+		rf.currentTerm = 0
+		rf.votedFor = -1
+	} else {
+		rf.currentTerm = term
+		rf.votedFor = votedFor
+	}
+}
 
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
@@ -123,22 +142,49 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	Term        int
+	CandidateId int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	Term        int
+	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
+// RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	DPrintf("Peer %d - received RequestVote from peer: %d, for term: %d", rf.me, args.CandidateId, args.Term)
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	} else if args.Term == rf.currentTerm {
+		if rf.votedFor == -1 {
+			rf.votedFor = args.CandidateId
+			reply.Term = args.Term
+			reply.VoteGranted = true
+		} else {
+			reply.Term = args.Term
+			reply.VoteGranted = false
+		}
+	} else {
+		// my term is less - update my term, grant vote and change role if needed.
+		rf.currentTerm = args.Term
+		rf.votedFor = args.CandidateId
+		reply.Term = args.Term
+		reply.VoteGranted = true
+		if rf.role == Leader {
+			// TODO - Leader should bailout from the heartbeat sending loop.
+			go rf.handleRoleChange(Follower)
+		}
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -173,6 +219,42 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+type AppendEntriesArgs struct {
+	Term     int
+	LeaderId int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// handle heartbeats for now.
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		reply.Term = args.Term
+		reply.Success = true
+		rf.incrementHeartBeats()
+		if rf.role == Leader {
+			// TODO - need a mechanism to centrally update the current peer role (streamline processing)
+			rf.role = Follower
+		}
+	} else if args.Term == rf.currentTerm {
+		reply.Term = args.Term
+		reply.Success = true
+		rf.incrementHeartBeats()
+	} else {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+	}
+}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -192,8 +274,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
-
 	return index, term, isLeader
 }
 
@@ -216,17 +296,163 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
+func (rf *Raft) resetHeartBeats() {
+	atomic.StoreInt32(&rf.heartBeats, 0)
+}
+
+func (rf *Raft) incrementHeartBeats() {
+	atomic.AddInt32(&rf.heartBeats, 1)
+}
+
+func (rf *Raft) getHeartBeats() int32 {
+	z := atomic.LoadInt32(&rf.heartBeats)
+	return z
+}
+
+// Handles Peer role change - set up as per the new state
+func (rf *Raft) handleRoleChange(role PeerRole) {
+	// TODO - check if we need to wrap-up things for the previous role (ideally we should not)
+	DPrintf("Peer %d, moved to role:%s, with term:%d, voted:%d", rf.me, role, rf.currentTerm, rf.votedFor)
+	if role == Follower {
+		rf.role = Follower
+		go rf.electionTicker()
+	} else if role == Candidate {
+		rf.role = Candidate
+		go rf.conductElection()
+	} else if role == Leader {
+		rf.role = Leader
+		go rf.lead()
+	}
+}
+
+func (rf *Raft) electionTicker() {
+	for !rf.killed() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		DPrintf("Check for election in peer: %d", rf.me)
 
+		rf.resetHeartBeats()
 
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
+		// pause for a random amount of time between 50 and 350 milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		// Check if the peer need to move from the follower role to candidate role.
+		if rf.getHeartBeats() == 0 {
+			DPrintf("Did not receive any heart-beat in peer: %d, moving to the candidate role", rf.me)
+			break
+		}
+	}
+
+	if !rf.killed() {
+		go rf.handleRoleChange(Candidate)
+	}
+}
+
+func (rf *Raft) conductElection() {
+	// increment current term
+	electionStartTime := time.Now()
+
+	// increment self term
+	rf.currentTerm = rf.currentTerm + 1
+	rf.votedFor = -1
+
+	var votes int32 = 0
+	var rollbackTerm int32 = int32(rf.currentTerm)
+
+	// vote self
+	votes = 1
+	rf.votedFor = rf.me
+
+	for i := 0; i < len(rf.peers); i++ {
+		go func(peerIndex int) {
+			if peerIndex != rf.me {
+				args := &RequestVoteArgs{}
+				args.CandidateId = rf.me
+				args.Term = rf.currentTerm
+				reply := &RequestVoteReply{}
+				rf.sendRequestVote(peerIndex, args, reply)
+				if reply.VoteGranted {
+					atomic.AddInt32(&votes, 1)
+					votes = votes + 1
+				}
+				if reply.Term > rf.currentTerm {
+					// update the current term, and indicate the flag to rollback to the Follower role.
+					// TODO - check if we need to safe-guard the updates to rf fields.
+					atomic.StoreInt32(&rollbackTerm, int32(reply.Term))
+				}
+			}
+		}(i)
+	}
+
+	// check and handle for time-out, win, or role-change
+	for {
+		// exit the election process - if the current peer becomes a Follower
+		updatedTerm := int(atomic.LoadInt32(&rollbackTerm))
+		if updatedTerm != rf.currentTerm {
+			DPrintf("Peer: %d, need to rollback as a Follower due to stale term", rf.me)
+			rf.currentTerm = updatedTerm
+			rf.votedFor = -1
+			// TODO - check if we need to pass around term and voted-for with the role change
+			go rf.handleRoleChange(Follower)
+			break
+		}
+
+		voteCount := int(atomic.LoadInt32(&votes))
+		if voteCount > len(rf.peers)/2 {
+			DPrintf("Peer: %d, won the election for term: %d", rf.me, rf.currentTerm)
+			go rf.handleRoleChange(Leader)
+			break
+		}
+
+		// wait for some max timeout for results for a given term.
+		electionResultsWaitTimeout := 300
+		if int32(time.Since(electionStartTime).Milliseconds()) > int32(electionResultsWaitTimeout) {
+			DPrintf("Peer: %d, need to restart the election process, as results awaiting timeouts.", rf.me)
+			go rf.handleRoleChange(Candidate)
+			break
+		}
+
+		ms := 10 // wait for 10 ms to check again.
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) lead() {
+	// Send heartbeat as long as its leader, else fallback.
+	var rollbackTerm int32 = int32(rf.currentTerm)
+	for {
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			go func(peer int) {
+				args := AppendEntriesArgs{}
+				reply := AppendEntriesReply{}
+				args.LeaderId = rf.me
+				args.Term = rf.currentTerm
+				rf.sendAppendEntries(peer, &args, &reply)
+				if reply.Term > rf.currentTerm {
+					atomic.StoreInt32(&rollbackTerm, int32(reply.Term))
+				}
+			}(i)
+		}
+
+		ms := 10 // send heartbeat every 10 second
+		updatedTerm := int(atomic.LoadInt32(&rollbackTerm))
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		if updatedTerm != rf.currentTerm {
+			rf.currentTerm = updatedTerm
+			rf.votedFor = -1
+			go rf.handleRoleChange(Follower)
+			break
+		}
+		// TODO - ensure proper state change handling
+		if rf.role == Follower {
+			go rf.handleRoleChange(Follower)
+			break
+		}
 	}
 }
 
@@ -247,13 +473,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	DPrintf("Making peer: %d", me)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// start ticker goroutine to start elections
-	go rf.ticker()
-
-
+	// initialize the peer in a follower role.
+	rf.handleRoleChange(Follower)
 	return rf
 }
