@@ -29,27 +29,22 @@ Watches turn committed state transitions into one-shot or persistent notificatio
 Snapshots and transaction logs reconstruct the same state after restart.
 
 ```mermaid
-flowchart LR
-    Client[Client] --> Transport[NIO or Netty transport]
-    Transport --> Admission[Request admission and throttling]
-    Admission --> Pipeline[Role-specific request pipeline]
-
-    Pipeline -->|read| LocalRead[Local read]
-    LocalRead --> DataTree[(DataTree)]
-
-    Pipeline -->|write| Leader[Leader ordering]
-    Leader --> Zab[Zab proposal / ACK / commit]
-    Zab --> Durable[(Transaction log)]
-    Zab --> Apply[Ordered transaction application]
-    Apply --> DataTree
-
-    DataTree --> Watches[Watch triggers]
-    Watches --> Transport
-    Transport --> Client
-
-    Snapshots[(Snapshots)] --> Recovery[Recovery]
-    Durable --> Recovery
-    Recovery --> DataTree
+graph LR;
+    Client["Client"] --> Transport["NIO or Netty transport"];
+    Transport --> Admission["Request admission and throttling"];
+    Admission --> Pipeline["Role-specific request pipeline"];
+    Pipeline --> ReadPath["Local read path"];
+    ReadPath --> DataTree["DataTree"];
+    Pipeline --> WritePath["Leader write path"];
+    WritePath --> Zab["Zab proposal, ACK, and commit"];
+    Zab --> TxnLog["Transaction log"];
+    Zab --> Apply["Ordered transaction application"];
+    Apply --> DataTree;
+    DataTree --> Watches["Watch triggers"];
+    Watches --> Transport;
+    Snapshots["Snapshots"] --> Recovery["Recovery"];
+    TxnLog --> Recovery;
+    Recovery --> DataTree;
 ```
 
 ## 2. Guiding design principles
@@ -113,92 +108,74 @@ Snapshots run separately from normal transaction application.
 ## 3. Layered component map
 
 ```mermaid
-flowchart TB
-    subgraph Lifecycle["Bootstrap and lifecycle"]
-        ZKMain[ZooKeeperServerMain]
-        QMain[QuorumPeerMain]
-        Peer[QuorumPeer state machine]
+graph TB;
+    subgraph Lifecycle
+        ZKMain["ZooKeeperServerMain"];
+        QMain["QuorumPeerMain"];
+        Peer["QuorumPeer state machine"];
     end
-
-    subgraph Network["Client networking"]
-        Factory[ServerCnxnFactory]
-        NIO[NIOServerCnxn]
-        Netty[NettyServerCnxn]
+    subgraph Networking
+        Factory["ServerCnxnFactory"];
+        NIO["NIOServerCnxn"];
+        Netty["NettyServerCnxn"];
     end
-
-    subgraph Processing["Request processing"]
-        Throttle[RequestThrottler]
-        Prep[PrepRequestProcessor]
-        Sync[SyncRequestProcessor]
-        Commit[CommitProcessor]
-        Final[FinalRequestProcessor]
+    subgraph Processing
+        Throttle["RequestThrottler"];
+        Prep["PrepRequestProcessor"];
+        Sync["SyncRequestProcessor"];
+        Commit["CommitProcessor"];
+        Final["FinalRequestProcessor"];
     end
-
-    subgraph Replication["Quorum and Zab"]
-        Election[FastLeaderElection]
-        Leader[Leader]
-        Follower[Follower]
-        Observer[Observer]
-        Handler[LearnerHandler]
+    subgraph Replication
+        Election["FastLeaderElection"];
+        Leader["Leader"];
+        Handler["LearnerHandler"];
+        Follower["Follower"];
+        Observer["Observer"];
     end
-
-    subgraph State["Replicated state"]
-        DB[ZKDatabase]
-        Tree[DataTree]
-        Nodes[DataNode hierarchy]
-        Sessions[SessionTracker]
-        Watch[Watch managers]
-        ACL[ACL cache/providers]
+    subgraph State
+        DB["ZKDatabase"];
+        Tree["DataTree"];
+        Sessions["SessionTracker"];
+        Watch["Watch managers"];
     end
-
-    subgraph Persistence["Durability"]
-        TxnSnap[FileTxnSnapLog]
-        TxnLog[FileTxnLog]
-        Snap[FileSnap]
+    subgraph Persistence
+        TxnSnap["FileTxnSnapLog"];
+        TxnLog["FileTxnLog"];
+        Snap["FileSnap"];
     end
-
-    subgraph Ops["Operations"]
-        Admin[AdminServer / commands]
-        Metrics[Metrics and JMX]
-        Audit[Audit logging]
-    end
-
-    ZKMain --> Factory
-    QMain --> Peer
-    Peer --> Election
-    Peer --> Leader
-    Peer --> Follower
-    Peer --> Observer
-
-    Factory --> NIO
-    Factory --> Netty
-    NIO --> Throttle
-    Netty --> Throttle
-    Throttle --> Prep
-    Prep --> Sync
-    Prep --> Commit
-    Sync --> TxnSnap
-    Commit --> Final
-    Sync --> Final
-    Final --> DB
-
-    Leader <--> Handler
-    Handler <--> Follower
-    Handler --> Observer
-    Leader --> Commit
-    Follower --> Commit
-    Observer --> Commit
-
-    DB --> Tree
-    Tree --> Nodes
-    Tree --> Watch
-    Tree --> ACL
-    Sessions --> Prep
-
-    TxnSnap --> TxnLog
-    TxnSnap --> Snap
-    TxnLog --> DB
-    Snap --> DB
+    ZKMain --> Factory;
+    QMain --> Peer;
+    Peer --> Election;
+    Peer --> Leader;
+    Peer --> Follower;
+    Peer --> Observer;
+    Factory --> NIO;
+    Factory --> Netty;
+    NIO --> Throttle;
+    Netty --> Throttle;
+    Throttle --> Prep;
+    Prep --> Sync;
+    Prep --> Commit;
+    Sync --> TxnSnap;
+    Sync --> Final;
+    Commit --> Final;
+    Final --> DB;
+    Leader --> Handler;
+    Handler --> Leader;
+    Handler --> Follower;
+    Follower --> Handler;
+    Handler --> Observer;
+    Leader --> Commit;
+    Follower --> Commit;
+    Observer --> Commit;
+    DB --> Tree;
+    Tree --> Watch;
+    Sessions --> Prep;
+    TxnSnap --> TxnLog;
+    TxnSnap --> Snap;
+    TxnLog --> DB;
+    Snap --> DB;
 ```
 
 ### Component responsibilities
@@ -398,27 +375,25 @@ paths and triggers the corresponding watches.
 The pipeline differs by role, but the stages preserve the same semantic separation.
 
 ```mermaid
-flowchart LR
+graph LR;
     subgraph Standalone
-        SP[Prep] --> SS[Sync/log] --> SF[Final/apply]
+        SP["Prep"] --> SS["Sync and log"];
+        SS --> SF["Final and apply"];
     end
-
-    subgraph LeaderPipeline["Leader"]
-        LP[Prep] --> LProp[Proposal]
-        LProp --> LSync[Sync/log]
-        LSync --> LAck[Local ACK]
-        LProp --> LCommit[CommitProcessor]
-        LCommit --> LFinal[Final/apply]
+    subgraph LeaderPipeline
+        LP["Prep"] --> LProp["Proposal"];
+        LProp --> LSync["Sync and log"];
+        LSync --> LAck["Local ACK"];
+        LProp --> LCommit["CommitProcessor"];
+        LCommit --> LFinal["Final and apply"];
     end
-
-    subgraph FollowerPipeline["Follower"]
-        FR[FollowerRequestProcessor] --> FC[CommitProcessor]
-        FC --> FF[Final/apply]
+    subgraph FollowerPipeline
+        FR["FollowerRequestProcessor"] --> FC["CommitProcessor"];
+        FC --> FF["Final and apply"];
     end
-
-    subgraph ObserverPipeline["Observer"]
-        OR[ObserverRequestProcessor] --> OC[CommitProcessor]
-        OC --> OF[Final/apply]
+    subgraph ObserverPipeline
+        OR["ObserverRequestProcessor"] --> OC["CommitProcessor"];
+        OC --> OF["Final and apply"];
     end
 ```
 
@@ -708,23 +683,21 @@ Only after `syncWithLeader` and `NEWLEADER` processing does it enter broadcast.
 ## 14. Threading and concurrency
 
 ```mermaid
-flowchart TB
-    Accept[Accept thread] --> Select[Selector threads]
-    Select --> Workers[Connection workers]
-    Workers --> Throttle[RequestThrottler thread]
-    Throttle --> Prep[Prep thread]
-
-    Prep --> Sync[Sync/log thread]
-    Sync --> Disk[(Transaction log)]
-    Sync --> Snapshot[Snapshot thread]
-
-    Prep --> Commit[CommitProcessor]
-    Commit --> Final[Final workers]
-    Final --> Tree[(DataTree)]
-
-    Sessions[SessionTracker thread] -->|closeSession request| Throttle
-    Election[Election sender/receiver] --> Peer[QuorumPeer role loop]
-    Peer --> Learners[LearnerHandler threads]
+graph TB;
+    Accept["Accept thread"] --> Select["Selector threads"];
+    Select --> Workers["Connection workers"];
+    Workers --> Throttle["RequestThrottler thread"];
+    Throttle --> Prep["Prep thread"];
+    Prep --> Sync["Sync and log thread"];
+    Sync --> Disk["Transaction log"];
+    Sync --> Snapshot["Snapshot thread"];
+    Prep --> Commit["CommitProcessor"];
+    Commit --> Final["Final workers"];
+    Final --> Tree["DataTree"];
+    Sessions["SessionTracker thread"] --> CloseSession["closeSession request"];
+    CloseSession --> Throttle;
+    Election["Election sender and receiver"] --> Peer["QuorumPeer role loop"];
+    Peer --> Learners["LearnerHandler threads"];
 ```
 
 Important concurrency boundaries:
