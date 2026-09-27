@@ -1,0 +1,2 @@
+# Production-stable Python client for Apache ZooKeeper.
+kazoo==2.11.0
